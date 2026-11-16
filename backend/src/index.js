@@ -9,6 +9,10 @@ const MARKET_PRICE_URL =
 const MARKET_CANDLE_URL =
   "https://api.realmarketapi.com/api/v1/candle";
 
+const TIMEFRAMES = ["M1", "M5", "H1"];
+
+// RESPONSE
+
 function response(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -22,19 +26,26 @@ function response(data, status = 200) {
   });
 }
 
+// CANDLE NORMALIZATION
+
 function normalizeCandle(c) {
   return {
-    open: Number(c.OpenPrice ?? c.openPrice),
-    high: Number(c.HighPrice ?? c.highPrice),
-    low: Number(c.LowPrice ?? c.lowPrice),
-    close: Number(c.ClosePrice ?? c.closePrice),
+    open: Number(c.OpenPrice ?? c.openPrice ?? c.open),
+    high: Number(c.HighPrice ?? c.highPrice ?? c.high),
+    low: Number(c.LowPrice ?? c.lowPrice ?? c.low),
+    close: Number(c.ClosePrice ?? c.closePrice ?? c.close),
     volume: Number(c.Volume ?? c.volume ?? 0),
-    time: c.OpenTime ?? c.openTime
+    time: c.OpenTime ?? c.openTime ?? c.time
   };
 }
 
 function validCandle(c) {
-  const values = [c.open, c.high, c.low, c.close];
+  const values = [
+    c.open,
+    c.high,
+    c.low,
+    c.close
+  ];
 
   return (
     values.every(Number.isFinite) &&
@@ -45,7 +56,10 @@ function validCandle(c) {
   );
 }
 
+// FETCH MARKET CANDLES
+
 async function getCandles(env, timeframe) {
+
   const params = new URLSearchParams({
     apiKey: env.REALMARKETAPI_KEY,
     symbolCode: "XAUUSD",
@@ -57,7 +71,9 @@ async function getCandles(env, timeframe) {
   );
 
   if (!result.ok) {
-    throw new Error(`Market provider returned ${result.status}`);
+    throw new Error(
+      `Market provider returned ${result.status}`
+    );
   }
 
   const raw = await result.json();
@@ -66,303 +82,434 @@ async function getCandles(env, timeframe) {
     ? raw
     : raw.Data ?? raw.data ?? [];
 
+  if (!Array.isArray(rows)) {
+    throw new Error("Invalid candle response");
+  }
+
   const candles = rows
     .map(normalizeCandle)
     .filter(validCandle)
-    .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    .sort(
+      (a, b) =>
+        Date.parse(a.time) - Date.parse(b.time)
+    );
 
-  if (candles.length < 20) {
+  const unique = candles.filter(
+    (c, index, array) =>
+      index === 0 ||
+      c.time !== array[index - 1].time
+  );
+
+  if (unique.length < 50) {
     throw new Error(
-      `Insufficient valid candles: ${candles.length}`
+      `At least 50 valid candles required. Received ${unique.length}.`
     );
   }
 
-  return candles.slice(-300);
+  return unique.slice(-300);
 }
 
-async function analyzeCandles(env, candles, timeframe) {
+// EMA CALCULATION
+
+function calculateEMA(values, period) {
+
+  if (values.length < period) {
+    return null;
+  }
+
+  const multiplier = 2 / (period + 1);
+
+  let ema = values
+    .slice(0, period)
+    .reduce((sum, value) => sum + value, 0) / period;
+
+  for (let i = period; i < values.length; i++) {
+    ema =
+      values[i] * multiplier +
+      ema * (1 - multiplier);
+  }
+
+  return ema;
+}
+
+// RSI CALCULATION
+
+function calculateRSI(values, period = 14) {
+
+  if (values.length <= period) {
+    return null;
+  }
+
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const change = values[i] - values[i - 1];
+
+    if (change > 0) gains += change;
+    if (change < 0) losses += Math.abs(change);
+  }
+
+  let averageGain = gains / period;
+  let averageLoss = losses / period;
+
+  for (let i = period + 1; i < values.length; i++) {
+
+    const change = values[i] - values[i - 1];
+
+    const gain = Math.max(change, 0);
+    const loss = Math.max(-change, 0);
+
+    averageGain =
+      (averageGain * (period - 1) + gain) / period;
+
+    averageLoss =
+      (averageLoss * (period - 1) + loss) / period;
+  }
+
+  if (averageLoss === 0) {
+    return averageGain === 0 ? 50 : 100;
+  }
+
+  const rs = averageGain / averageLoss;
+
+  return 100 - (100 / (1 + rs));
+}
+
+// MACD CALCULATION
+
+function calculateMACD(values) {
+
+  if (values.length < 35) {
+    return null;
+  }
+
+  const macdSeries = [];
+
+  for (let i = 25; i < values.length; i++) {
+
+    const section = values.slice(0, i + 1);
+
+    const fast = calculateEMA(section, 12);
+    const slow = calculateEMA(section, 26);
+
+    if (fast !== null && slow !== null) {
+      macdSeries.push(fast - slow);
+    }
+  }
+
+  if (macdSeries.length < 9) {
+    return null;
+  }
+
+  const macd = macdSeries[macdSeries.length - 1];
+
+  const signal = calculateEMA(macdSeries, 9);
+
+  return {
+    macd,
+    signal,
+    histogram: macd - signal
+  };
+}
+
+// ATR CALCULATION
+
+function calculateATR(candles, period = 14) {
+
+  if (candles.length <= period) {
+    return null;
+  }
+
+  const ranges = [];
+
+  for (let i = 1; i < candles.length; i++) {
+
+    const current = candles[i];
+    const previous = candles[i - 1];
+
+    const tr = Math.max(
+      current.high - current.low,
+      Math.abs(current.high - previous.close),
+      Math.abs(current.low - previous.close)
+    );
+
+    ranges.push(tr);
+  }
+
+  let atr = ranges
+    .slice(0, period)
+    .reduce((sum, value) => sum + value, 0) / period;
+
+  for (let i = period; i < ranges.length; i++) {
+    atr =
+      (atr * (period - 1) + ranges[i]) / period;
+  }
+
+  return atr;
+}
+
+// MARKET STRUCTURE
+
+function calculateStructure(candles) {
+
+  const recent = candles.slice(-20);
+  const previous = candles.slice(-40, -20);
+
+  if (recent.length < 20 || previous.length < 20) {
+    return null;
+  }
+
+  const recentHigh = Math.max(
+    ...recent.map(c => c.high)
+  );
+
+  const recentLow = Math.min(
+    ...recent.map(c => c.low)
+  );
+
+  const previousHigh = Math.max(
+    ...previous.map(c => c.high)
+  );
+
+  const previousLow = Math.min(
+    ...previous.map(c => c.low)
+  );
+
+  const lastClose = candles[candles.length - 1].close;
+
+  let structure = "RANGE";
+
+  if (lastClose > previousHigh) {
+    structure = "BULLISH BREAKOUT";
+  } else if (lastClose < previousLow) {
+    structure = "BEARISH BREAKOUT";
+  } else if (
+    recentHigh > previousHigh &&
+    recentLow > previousLow
+  ) {
+    structure = "HIGHER HIGHS AND HIGHER LOWS";
+  } else if (
+    recentHigh < previousHigh &&
+    recentLow < previousLow
+  ) {
+    structure = "LOWER HIGHS AND LOWER LOWS";
+  }
+
+  return {
+    recent_high: recentHigh,
+    recent_low: recentLow,
+    previous_high: previousHigh,
+    previous_low: previousLow,
+    structure
+  };
+}
+
+// COMPLETE TECHNICAL ANALYSIS
+
+function calculateIndicators(candles) {
+
+  const closes = candles.map(c => c.close);
+
+  const ema20 = calculateEMA(closes, 20);
+  const ema50 = calculateEMA(closes, 50);
+
+  const rsi = calculateRSI(closes, 14);
+
+  const macd = calculateMACD(closes);
+
+  const atr = calculateATR(candles, 14);
+
+  const structure = calculateStructure(candles);
+
+  const latest = closes[closes.length - 1];
+
+  let trend = "SIDEWAYS";
+
+  if (ema20 > ema50 && latest > ema20) {
+    trend = "BULLISH";
+  } else if (ema20 < ema50 && latest < ema20) {
+    trend = "BEARISH";
+  }
+
+  let momentum = "NEUTRAL";
+
+  if (macd && macd.histogram > 0) {
+    momentum = "BULLISH";
+  } else if (macd && macd.histogram < 0) {
+    momentum = "BEARISH";
+  }
+
+  let rsiCondition = "NEUTRAL";
+
+  if (rsi >= 70) {
+    rsiCondition = "OVERBOUGHT";
+  } else if (rsi <= 30) {
+    rsiCondition = "OVERSOLD";
+  }
+
+  return {
+    latest_price: latest,
+
+    ema: {
+      ema20,
+      ema50
+    },
+
+    rsi: {
+      value: rsi,
+      condition: rsiCondition
+    },
+
+    macd,
+
+    atr,
+
+    trend,
+
+    momentum,
+
+    market_structure: structure
+  };
+}
+
+// AI ANALYSIS
+
+async function analyzeCandles(
+  env,
+  candles,
+  timeframe
+) {
+
+  const indicators = calculateIndicators(candles);
+
   const aiResponse = await fetch(TCHAVI_URL, {
     method: "POST",
+
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${env.TCHAVI_API_KEY}`
     },
+
     body: JSON.stringify({
+
       model: "gpt-4o-mini",
+
       temperature: 0.2,
+
       messages: [
+
         {
           role: "system",
+
           content: `
-You are SIR BOT AI, an XAUUSD market analysis assistant.
+You are SIR BOT AI, an advanced XAUUSD market analysis assistant.
 
-Analyze the genuine supplied OHLCV candles.
+Analyze the supplied genuine OHLCV candles and mathematically calculated indicators.
 
-Consider:
-- Market structure
-- Trend
-- Momentum
-- Recent price action
-- Volatility
+Evaluate:
 
-Return ONLY JSON:
+1. EMA20 and EMA50 trend alignment.
+2. RSI 14 momentum and overbought/oversold conditions.
+3. MACD momentum and histogram.
+4. ATR volatility.
+5. Recent market structure.
+6. Recent price action.
+7. Agreement or disagreement between indicators.
+
+IMPORTANT RULES:
+
+- Do not automatically BUY because RSI is oversold.
+- Do not automatically SELL because RSI is overbought.
+- Require multiple confirming factors.
+- Identify conflicting indicators.
+- Choose WAIT when evidence is insufficient.
+- Do not invent prices or indicators.
+- Do not promise profits.
+- Never claim to execute trades.
+- Confidence must reflect evidence quality, not certainty.
+- A high confidence score does not guarantee a successful trade.
+
+Return ONLY valid JSON:
 
 {
   "decision": "BUY, SELL, or WAIT",
   "confidence": 0,
   "trend": "BULLISH, BEARISH, or SIDEWAYS",
-  "reasoning": "Explanation",
+  "reasoning": "Detailed explanation",
   "risk_warning": "Trading involves risk"
 }
-
-Choose WAIT when evidence is insufficient.
-Never invent prices.
-Never claim to execute trades.
 `
         },
+
         {
           role: "user",
+
           content: JSON.stringify({
+
             market: "XAUUSD",
+
             timeframe,
-            candles
+
+            candle_count: candles.length,
+
+            candles,
+
+            indicators
+
           })
         }
+
       ]
+
     })
+
   });
 
   if (!aiResponse.ok) {
-    throw new Error(`Tchavi returned ${aiResponse.status}`);
+    throw new Error(
+      `Tchavi returned ${aiResponse.status}`
+    );
   }
 
   const result = await aiResponse.json();
-  const content = result.choices?.[0]?.message?.content;
+
+  const content =
+    result.choices?.[0]?.message?.content;
 
   if (!content) {
     throw new Error("Empty AI response");
   }
 
   const analysis = JSON.parse(
-    content.replace(/```json/gi, "")
+    content
+      .replace(/```json/gi, "")
       .replace(/```/g, "")
       .trim()
   );
 
   if (
     !["BUY", "SELL", "WAIT"].includes(analysis.decision) ||
+
     !Number.isFinite(analysis.confidence) ||
+
     analysis.confidence < 0 ||
+
     analysis.confidence > 100 ||
+
     !["BULLISH", "BEARISH", "SIDEWAYS"].includes(analysis.trend)
   ) {
     throw new Error("Invalid AI analysis");
   }
 
-  return analysis;
+  return {
+    analysis,
+    indicators
+  };
 }
 
+// MAIN WORKER
+
 export default {
-  async fetch(request, env) {
-    const origin = request.headers.get("Origin");
 
-    if (origin && origin !== ALLOWED_ORIGIN) {
-      return response({ error: "Origin not allowed" }, 403);
-    }
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type"
-        }
-      });
-    }
-
-    const url = new URL(request.url);
-
-    if (url.pathname === "/health" && request.method === "GET") {
-      return response({
-        project: "SIR BOT AI",
-        status: "online",
-        market: "XAUUSD",
-        ai: env.TCHAVI_API_KEY ? "configured" : "missing",
-        market_data: env.REALMARKETAPI_KEY ? "configured" : "missing",
-        trading: "disabled"
-      });
-    }
-
-    if (!env.REALMARKETAPI_KEY) {
-      return response({ error: "Market API key missing" }, 500);
-    }
-
-    const timeframe = url.searchParams.get("timeframe") || "M1";
-
-    if (!["M1", "M5", "H1"].includes(timeframe)) {
-      return response({ error: "Unsupported timeframe" }, 400);
-    }
-
-    // LATEST PRICE
-    if (url.pathname === "/market-check" && request.method === "GET") {
-      try {
-        const params = new URLSearchParams({
-          apiKey: env.REALMARKETAPI_KEY,
-          symbolCode: "XAUUSD",
-          timeFrame: timeframe
-        });
-
-        const result = await fetch(
-          `${MARKET_PRICE_URL}?${params}`
-        );
-
-        if (!result.ok) {
-          return response({
-            error: "Market provider failed",
-            provider_status: result.status
-          }, 502);
-        }
-
-        const market = await result.json();
-
-        return response({
-          project: "SIR BOT AI",
-          market: "XAUUSD",
-          timeframe,
-          data_status: "connected",
-          prices: {
-            open: Number(market.openPrice ?? market.OpenPrice),
-            close: Number(market.closePrice ?? market.ClosePrice),
-            high: Number(market.highPrice ?? market.HighPrice),
-            low: Number(market.lowPrice ?? market.LowPrice),
-            bid: Number(market.bid ?? market.Bid),
-            ask: Number(market.ask ?? market.Ask)
-          },
-          received_at: new Date().toISOString(),
-          trading: "disabled"
-        });
-
-      } catch (error) {
-        return response({ error: error.message }, 502);
-      }
-    }
-
-    // MULTIPLE MARKET CANDLES
-    if (url.pathname === "/market-candles" && request.method === "GET") {
-      try {
-        const candles = await getCandles(env, timeframe);
-
-        return response({
-          project: "SIR BOT AI",
-          market: "XAUUSD",
-          timeframe,
-          candle_count: candles.length,
-          candles,
-          trading: "disabled"
-        });
-
-      } catch (error) {
-        return response({
-          error: "Candle retrieval failed",
-          details: error.message
-        }, 502);
-      }
-    }
-
-    // AUTOMATIC LIVE MARKET ANALYSIS
-    if (url.pathname === "/analyze-live" && request.method === "GET") {
-      if (!env.TCHAVI_API_KEY) {
-        return response({ error: "Tchavi key missing" }, 500);
-      }
-
-      try {
-        const candles = await getCandles(env, timeframe);
-
-        const analysis = await analyzeCandles(
-          env,
-          candles,
-          timeframe
-        );
-
-        return response({
-          project: "SIR BOT AI",
-          market: "XAUUSD",
-          timeframe,
-          candle_count: candles.length,
-          latest_candle: candles[candles.length - 1].time,
-          ai: "connected",
-          analysis,
-          execution: "disabled",
-          warning: "AI analysis is not a guaranteed trading signal."
-        });
-
-      } catch (error) {
-        return response({
-          error: "Live analysis failed",
-          details: error.message
-        }, 502);
-      }
-    }
-
-    // MANUAL AI ANALYSIS
-    if (url.pathname === "/analyze" && request.method === "POST") {
-      if (!env.TCHAVI_API_KEY) {
-        return response({ error: "Tchavi key missing" }, 500);
-      }
-
-      try {
-        const data = await request.json();
-
-        if (
-          data.market !== "XAUUSD" ||
-          !Array.isArray(data.candles) ||
-          data.candles.length < 20 ||
-          data.candles.length > 300
-        ) {
-          return response({
-            error: "Provide 20 to 300 XAUUSD candles"
-          }, 400);
-        }
-
-        const candles = data.candles.map(c => ({
-          ...c,
-          open: Number(c.open),
-          high: Number(c.high),
-          low: Number(c.low),
-          close: Number(c.close),
-          time: c.time || c.openTime
-        }));
-
-        if (!candles.every(validCandle)) {
-          return response({ error: "Invalid candle data" }, 400);
-        }
-
-        const analysis = await analyzeCandles(
-          env,
-          candles,
-          data.timeframe || "M1"
-        );
-
-        return response({
-          project: "SIR BOT AI",
-          market: "XAUUSD",
-          analysis,
-          execution: "disabled"
-        });
-
-      } catch (error) {
-        return response({
-          error: "AI analysis failed",
-          details: error.message
-        }, 502);
-      }
-    }
-
-    return response({
-      project: "SIR BOT AI",
-      status: "online",
-      trading: "disabled"
-    });
-  }
-};
+  async fetch(request
