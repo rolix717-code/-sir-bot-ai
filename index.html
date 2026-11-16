@@ -7,72 +7,314 @@
   <title>SIR BOT AI | Gold Trading</title>
   <link rel="stylesheet" href="style.css">
 </head>
+
 <body>
-  <header class="topbar">
-    <a class="brand" href="#"><span class="brand-mark">S</span><span>SIR BOT <b>AI</b><small>GOLD EDITION</small></span></a>
-    <button class="menu" id="menuBtn" aria-label="Toggle menu">☰</button>
-    <nav id="nav"><a href="#dashboard">Dashboard</a><a href="#how">How it works</a><a href="#risk">Risk controls</a></nav>
-  </header>
 
-  <main>
-    <section class="hero">
-      <div class="eyebrow"><i></i> AI-POWERED TRADING PLATFORM</div>
-      <h1>Trade gold with<br><span>intelligent analysis.</span></h1>
-      <p>SIR BOT AI is being built to analyze XAUUSD, identify opportunities, and manage trade execution through an authorized MetaTrader 5 connection.</p>
-      <a class="primary" href="#dashboard">Open dashboard <span>→</span></a>
-      <div class="hero-note">XAUUSD ONLY <b>•</b> MT5 CONNECTION PLANNED <b>•</b> RISK FIRST</div>
-    </section>
+<header class="topbar">
+  <a class="brand" href="#">
+    <span class="brand-mark">S</span>
+    <span>SIR BOT <b>AI</b><small>GOLD EDITION</small></span>
+  </a>
 
-    <section class="section" id="dashboard">
-      <div class="section-head"><div><div class="eyebrow">CONTROL CENTER</div><h2>Trading dashboard</h2></div><span class="badge demo">PREVIEW MODE</span></div>
-      <div class="status-card">
-        <div><span class="muted">AI SYSTEM STATUS</span><h3><span class="status-dot"></span> Not connected</h3><p>This preview does not place trades or connect to a broker.</p></div>
-        <button class="outline" id="connectBtn">Connection details</button>
-      </div>
-      <div class="stats">
-        <article class="stat"><span>Account balance</span><strong>—</strong><small>Waiting for MT5 connection</small></article>
-        <article class="stat"><span>Equity</span><strong>—</strong><small>Waiting for MT5 connection</small></article>
-        <article class="stat"><span>Today's P/L</span><strong>—</strong><small>No live account data</small></article>
-      </div>
-      <div class="grid">
-        <article class="panel">
-          <div class="panel-title"><h3>AI market decision</h3><span class="badge">XAUUSD</span></div>
-          <div class="decision">WAIT</div>
-          <p class="muted">Live market analysis will appear here after the AI service is connected and validated.</p>
-          <div class="line"></div>
-          <div class="row"><span>Market</span><b>Gold / XAUUSD</b></div>
-          <div class="row"><span>Timeframe</span><b>M5 (planned)</b></div>
-          <div class="row"><span>Execution</span><b>Disabled in preview</b></div>
-        </article>
-        <article class="panel" id="risk">
-          <div class="panel-title"><h3>Risk settings</h3><span class="badge safe">PROPOSED</span></div>
-          <label for="riskPct">Risk per trade <b id="riskValue">1%</b></label>
-          <input id="riskPct" type="range" min="0.25" max="2" step="0.25" value="1">
-          <div class="range-labels"><span>0.25%</span><span>2%</span></div>
-          <div class="row"><span>Daily loss stop</span><b>3% proposed</b></div>
-          <div class="row"><span>Market</span><b>XAUUSD only</b></div>
-          <div class="row"><span>Lot sizing</span><b>Automatic (planned)</b></div>
-          <p class="tiny">The slider is a visual preview only; it does not change a live account.</p>
-        </article>
-      </div>
-      <article class="panel trades">
-        <div class="panel-title"><h3>Recent trades</h3><span class="muted">Live history unavailable</span></div>
-        <div class="empty">No trades to display yet.</div>
+  <button class="menu" id="menuBtn">☰</button>
+
+  <nav id="nav">
+    <a href="#dashboard">Dashboard</a>
+    <a href="#market">Live Market</a>
+    <a href="#how">How it works</a>
+    <a href="#risk">Risk controls</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="eyebrow"><i></i> AI-POWERED TRADING PLATFORM</div>
+
+  <h1>Trade gold with<br>
+    <span>intelligent analysis.</span>
+  </h1>
+
+  <p>
+    SIR BOT AI analyzes XAUUSD market conditions,
+    identifies opportunities and prepares for
+    secure MetaTrader 5 integration.
+  </p>
+
+  <a class="primary" href="#dashboard">
+    Open dashboard <span>→</span>
+  </a>
+
+  <div class="hero-note">
+    XAUUSD ONLY <b>•</b> LIVE MARKET DATA <b>•</b> RISK FIRST
+  </div>
+</section>
+
+<section class="section" id="dashboard">
+
+  <div class="section-head">
+    <div>
+      <div class="eyebrow">CONTROL CENTER</div>
+      <h2>Trading dashboard</h2>
+    </div>
+    <span class="badge demo">PREVIEW MODE</span>
+  </div>
+
+  <div class="status-card">
+    <div>
+      <span class="muted">AI SYSTEM STATUS</span>
+      <h3><span class="status-dot"></span> Checking connection</h3>
+      <p id="backendMessage">Connecting to SIR BOT AI backend...</p>
+    </div>
+    <button class="outline" id="connectBtn">
+      Connection details
+    </button>
+  </div>
+
+  <!-- LIVE MARKET PANEL -->
+
+  <article class="panel" id="market">
+
+    <div class="panel-title">
+      <h3>Live Gold Market</h3>
+      <span class="badge safe" id="marketStatus">
+        CONNECTING
+      </span>
+    </div>
+
+    <div class="muted">XAUUSD / GOLD</div>
+
+    <div style="font-size:13px;margin-top:18px;color:#9aa8bf">
+      LATEST PRICE
+    </div>
+
+    <div id="goldPrice"
+         style="font-size:38px;font-weight:800;margin:8px 0">
+      Loading...
+    </div>
+
+    <div class="stats">
+
+      <article class="stat">
+        <span>Bid</span>
+        <strong id="goldBid">—</strong>
       </article>
-    </section>
 
-    <section class="section" id="how">
-      <div class="eyebrow">BUILD ROADMAP</div><h2>From analysis to execution.</h2>
-      <div class="steps">
-        <div><b>01</b><h3>AI analysis</h3><p>Analyze gold price action and market conditions using live, reliable data.</p></div>
-        <div><b>02</b><h3>Risk calculation</h3><p>Calculate position size from account equity, stop distance, and risk limits.</p></div>
-        <div><b>03</b><h3>MT5 execution</h3><p>Send authorized orders through a secure MT5-side connection, with monitoring and a kill switch.</p></div>
+      <article class="stat">
+        <span>Ask</span>
+        <strong id="goldAsk">—</strong>
+      </article>
+
+      <article class="stat">
+        <span>Spread</span>
+        <strong id="goldSpread">—</strong>
+      </article>
+
+    </div>
+
+    <div class="line"></div>
+
+    <div class="row">
+      <span>Market timeframe</span>
+      <b>M1</b>
+    </div>
+
+    <div class="row">
+      <span>Last update</span>
+      <b id="marketUpdated">Waiting...</b>
+    </div>
+
+    <p class="tiny" id="marketMessage">
+      Connecting to RealMarketAPI.
+    </p>
+
+  </article>
+
+  <!-- ACCOUNT STATISTICS -->
+
+  <div class="stats">
+
+    <article class="stat">
+      <span>Account balance</span>
+      <strong>—</strong>
+      <small>Waiting for MT5 connection</small>
+    </article>
+
+    <article class="stat">
+      <span>Equity</span>
+      <strong>—</strong>
+      <small>Waiting for MT5 connection</small>
+    </article>
+
+    <article class="stat">
+      <span>Today's P/L</span>
+      <strong>—</strong>
+      <small>No live account data</small>
+    </article>
+
+  </div>
+
+  <div class="grid">
+
+    <article class="panel">
+
+      <div class="panel-title">
+        <h3>AI market decision</h3>
+        <span class="badge">XAUUSD</span>
       </div>
-    </section>
-    <section class="warning"><b>Risk notice</b><p>Trading gold involves substantial risk. AI can make incorrect decisions and losses are possible. This website is a non-trading preview; no broker connection, live data, or order execution is active.</p></section>
-  </main>
-  <footer><span>SIR BOT AI © 2026</span><span>SMART INTELLIGENCE. PRECISION TRADING.</span></footer>
-  <dialog id="infoDialog"><div class="dialog-inner"><button class="close" id="closeDialog" aria-label="Close">×</button><div class="eyebrow">NEXT DEVELOPMENT STAGE</div><h2>Secure MT5 connection</h2><p>We will connect an authorized MT5 terminal or Expert Advisor to the platform. Never enter your MT5 master password into this preview website.</p><button class="primary" id="okDialog">Got it</button></div></dialog>
-  <script src="app.js"></script>
+
+      <div class="decision">WAIT</div>
+
+      <p class="muted">
+        Trading signals are disabled until sufficient
+        historical market data and risk validation
+        are available.
+      </p>
+
+      <div class="line"></div>
+
+      <div class="row">
+        <span>Market</span>
+        <b>Gold / XAUUSD</b>
+      </div>
+
+      <div class="row">
+        <span>Timeframe</span>
+        <b>M5 (planned)</b>
+      </div>
+
+      <div class="row">
+        <span>Execution</span>
+        <b>Disabled</b>
+      </div>
+
+    </article>
+
+    <article class="panel" id="risk">
+
+      <div class="panel-title">
+        <h3>Risk settings</h3>
+        <span class="badge safe">PROPOSED</span>
+      </div>
+
+      <label for="riskPct">
+        Risk per trade <b id="riskValue">1%</b>
+      </label>
+
+      <input id="riskPct"
+             type="range"
+             min="0.25"
+             max="2"
+             step="0.25"
+             value="1">
+
+      <div class="range-labels">
+        <span>0.25%</span>
+        <span>2%</span>
+      </div>
+
+      <div class="row">
+        <span>Daily loss stop</span>
+        <b>3% proposed</b>
+      </div>
+
+      <div class="row">
+        <span>Market</span>
+        <b>XAUUSD only</b>
+      </div>
+
+      <div class="row">
+        <span>Lot sizing</span>
+        <b>Automatic (planned)</b>
+      </div>
+
+      <p class="tiny">
+        Visual preview only. No live account settings are changed.
+      </p>
+
+    </article>
+
+  </div>
+
+  <article class="panel trades">
+    <div class="panel-title">
+      <h3>Recent trades</h3>
+      <span class="muted">Live history unavailable</span>
+    </div>
+
+    <div class="empty">No trades to display yet.</div>
+  </article>
+
+</section>
+
+<section class="section" id="how">
+
+  <div class="eyebrow">BUILD ROADMAP</div>
+  <h2>From analysis to execution.</h2>
+
+  <div class="steps">
+
+    <div>
+      <b>01</b>
+      <h3>AI analysis</h3>
+      <p>Analyze gold price action and market conditions.</p>
+    </div>
+
+    <div>
+      <b>02</b>
+      <h3>Risk calculation</h3>
+      <p>Calculate position size and enforce risk limits.</p>
+    </div>
+
+    <div>
+      <b>03</b>
+      <h3>MT5 execution</h3>
+      <p>Connect a secure MT5 terminal with monitoring and a kill switch.</p>
+    </div>
+
+  </div>
+
+</section>
+
+<section class="warning">
+  <b>Risk notice</b>
+  <p>
+    Trading gold involves substantial risk.
+    AI can make incorrect decisions and losses are possible.
+    No broker connection or order execution is active.
+  </p>
+</section>
+
+</main>
+
+<footer>
+  <span>SIR BOT AI © 2026</span>
+  <span>SMART INTELLIGENCE. PRECISION TRADING.</span>
+</footer>
+
+<dialog id="infoDialog">
+  <div class="dialog-inner">
+
+    <button class="close" id="closeDialog">×</button>
+
+    <div class="eyebrow">NEXT DEVELOPMENT STAGE</div>
+
+    <h2>Secure MT5 connection</h2>
+
+    <p>
+      We will connect an authorized MT5 terminal
+      through a secure connection.
+      Never enter your MT5 master password here.
+    </p>
+
+    <button class="primary" id="okDialog">
+      Got it
+    </button>
+
+  </div>
+</dialog>
+
+<script src="app.js"></script>
+
 </body>
 </html>
