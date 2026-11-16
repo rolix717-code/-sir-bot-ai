@@ -6,7 +6,6 @@ const SYMBOL = "XAUUSD";
 const TIMEFRAMES = ["M5", "M15", "H1"];
 const MIN_CONFIDENCE = 70;
 const SIGNAL_TTL = 86400;
-
 const MAX_M5_AGE_MS = 20 * 60 * 1000;
 
 function response(data, status = 200) {
@@ -16,7 +15,8 @@ function response(data, status = 200) {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization"
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization"
     }
   });
 }
@@ -27,7 +27,8 @@ function cors() {
     headers: {
       "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization"
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization"
     }
   });
 }
@@ -163,10 +164,8 @@ async function marketRequest(env, endpoint, timeframe) {
   return data;
 }
 
-// Latest completed candle from /price.
 async function getLatestPrice(env, timeframe = "M5") {
   const data = await marketRequest(env, "price", timeframe);
-
   const candle = normalizeCandle(data);
 
   if (!candle) {
@@ -184,9 +183,7 @@ async function getLatestPrice(env, timeframe = "M5") {
     candleTime: candle.time,
     timestamp: candle.timestamp,
     ageMinutes: Math.round(ageMs / 60000),
-    fresh:
-      ageMs >= -120000 &&
-      ageMs <= MAX_M5_AGE_MS
+    fresh: ageMs >= -120000 && ageMs <= MAX_M5_AGE_MS
   };
 }
 
@@ -289,9 +286,7 @@ function macd(values) {
 
   if (fast === null || slow === null) return null;
 
-  return {
-    value: fast - slow
-  };
+  return { value: fast - slow };
 }
 
 function structure(candles) {
@@ -566,9 +561,9 @@ function makeSignal(analysis, ind) {
 // TELEGRAM
 // -------------------------
 
-async function sendTelegram(env, message) {
-  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    throw new Error("Telegram credentials are missing.");
+async function sendTelegramToChat(env, chatId, message) {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    throw new Error("Telegram bot token is missing.");
   }
 
   const url =
@@ -580,7 +575,7 @@ async function sendTelegram(env, message) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      chat_id: env.TELEGRAM_CHAT_ID,
+      chat_id: chatId,
       text: message,
       disable_web_page_preview: true
     }),
@@ -596,6 +591,18 @@ async function sendTelegram(env, message) {
   }
 
   return data;
+}
+
+async function sendTelegram(env, message) {
+  if (!env.TELEGRAM_CHAT_ID) {
+    throw new Error("Telegram chat ID is missing.");
+  }
+
+  return sendTelegramToChat(
+    env,
+    env.TELEGRAM_CHAT_ID,
+    message
+  );
 }
 
 function formatSignal(signal) {
@@ -757,9 +764,7 @@ function aiInput(market) {
 }
 
 async function runAnalysis(env, notify = false) {
-  // First check the dedicated latest completed M5 candle.
   const latestPrice = await getLatestPrice(env, "M5");
-
   const freshness = checkFreshness(latestPrice);
 
   if (!freshness.fresh) {
@@ -773,8 +778,6 @@ async function runAnalysis(env, notify = false) {
   }
 
   const market = await collectMarket(env);
-
-  // Check that the candle endpoint is not lagging behind /price.
   const m5Candle = market.M5.candles.at(-1);
 
   if (
@@ -837,6 +840,286 @@ async function runAnalysis(env, notify = false) {
 }
 
 // -------------------------
+// TELEGRAM COMMAND HANDLER
+// -------------------------
+
+async function handleTelegramCommand(env, message) {
+  const chatId = String(message.chat?.id ?? "");
+  const text = String(message.text ?? "").trim();
+
+  if (!chatId || !text) return;
+
+  // Only allow the configured Telegram chat.
+  if (
+    !env.TELEGRAM_CHAT_ID ||
+    chatId !== String(env.TELEGRAM_CHAT_ID)
+  ) {
+    console.log("Ignored Telegram message from an unapproved chat.");
+    return;
+  }
+
+  const command = text.split(/\s+/)[0]
+    .split("@")[0]
+    .toLowerCase();
+
+  if (command === "/start") {
+    await sendTelegramToChat(env, chatId, `
+🟡 WELCOME TO SIR BOT AI
+
+Your XAUUSD analysis assistant is online.
+
+Available commands:
+
+/start - Start the bot
+/help - Show commands
+/status - Check system status
+/signal - Request fresh XAUUSD analysis
+
+━━━━━━━━━━━━━━━━━━
+Market: XAUUSD
+Analysis: M5 / M15 / H1
+Automatic analysis: Every 5 minutes, if scheduled deployment is active.
+
+MT5 execution: DISABLED
+
+SIR BOT AI
+`.trim());
+
+    return;
+  }
+
+  if (command === "/help") {
+    await sendTelegramToChat(env, chatId, `
+🟡 SIR BOT AI — COMMANDS
+
+/start
+Open the welcome message.
+
+/help
+Show this command guide.
+
+/status
+Check backend and market data.
+
+/signal
+Request a new XAUUSD analysis.
+
+Signals are analysis only.
+No trades are executed automatically.
+
+SIR BOT AI
+`.trim());
+
+    return;
+  }
+
+  if (command === "/status") {
+    const latest = await getLatestPrice(env, "M5");
+
+    await sendTelegramToChat(env, chatId, `
+🟡 SIR BOT AI — SYSTEM STATUS
+
+Backend: ONLINE
+AI: ${env.TCHAVI_API_KEY ? "CONFIGURED" : "MISSING"}
+Market data: ${env.REALMARKETAPI_KEY ? "CONFIGURED" : "MISSING"}
+Telegram: CONFIGURED
+KV: ${env.SIGNAL_DEDUPE ? "CONFIGURED" : "MISSING"}
+
+━━━━━━━━━━━━━━━━━━
+
+Symbol: ${SYMBOL}
+Latest price: ${latest.price}
+Timeframe: ${latest.timeframe}
+Candle time: ${latest.candleTime}
+Candle age: ${latest.ageMinutes} minutes
+Fresh: ${latest.fresh ? "YES" : "NO"}
+
+MT5 execution: DISABLED
+
+SIR BOT AI
+`.trim());
+
+    return;
+  }
+
+  if (command === "/signal") {
+    await sendTelegramToChat(
+      env,
+      chatId,
+      "⏳ SIR BOT AI is analyzing XAUUSD across M5, M15 and H1. Please wait..."
+    );
+
+    try {
+      const result = await runAnalysis(env, false);
+
+      if (!result.success) {
+        await sendTelegramToChat(env, chatId, `
+🟡 SIR BOT AI — XAUUSD
+
+DECISION: WAIT
+
+Reason:
+${result.reason ?? "Market data is not ready."}
+
+No signal has been issued.
+
+MT5 execution: DISABLED
+`.trim());
+
+        return;
+      }
+
+      if (result.signal.decision === "WAIT") {
+        await sendTelegramToChat(env, chatId, `
+🟡 SIR BOT AI — XAUUSD
+
+DECISION: WAIT
+
+Latest price: ${result.latestPrice.price}
+
+AI decision: ${result.analysis.decision}
+AI score: ${result.analysis.confidence}/100
+
+Reason:
+${result.signal.reason ?? result.analysis.reasoning}
+
+Risk:
+${result.analysis.risk_warning || "Trading involves risk."}
+
+No trade signal issued.
+MT5 execution: DISABLED
+`.trim());
+
+        return;
+      }
+
+      await sendTelegramToChat(
+        env,
+        chatId,
+        formatSignal(result.signal)
+      );
+
+    } catch (error) {
+      console.error("Telegram signal command error:", error);
+
+      await sendTelegramToChat(
+        env,
+        chatId,
+        `⚠️ SIR BOT AI could not complete the analysis.\n\nReason: ${error.message}`
+      );
+    }
+
+    return;
+  }
+
+  await sendTelegramToChat(
+    env,
+    chatId,
+    "Unknown command. Send /help to see available commands."
+  );
+}
+
+async function telegramWebhook(request, env) {
+  if (!env.TELEGRAM_WEBHOOK_SECRET) {
+    return response({ error: "Webhook secret is missing." }, 500);
+  }
+
+  const suppliedSecret =
+    request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+
+  if (suppliedSecret !== env.TELEGRAM_WEBHOOK_SECRET) {
+    return response({ error: "Invalid webhook secret." }, 401);
+  }
+
+  if (!env.SIGNAL_DEDUPE) {
+    return response({ error: "KV binding is missing." }, 500);
+  }
+
+  const update = await request.json();
+
+  if (!Number.isInteger(update.update_id)) {
+    return response({ success: true, ignored: true });
+  }
+
+  const key = `telegram-update:${update.update_id}`;
+
+  const previous = await env.SIGNAL_DEDUPE.get(key);
+
+  if (previous) {
+    return response({ success: true, duplicate: true });
+  }
+
+  // Mark before processing so Telegram retries do not repeat commands.
+  await env.SIGNAL_DEDUPE.put(
+    key,
+    "processed",
+    { expirationTtl: SIGNAL_TTL }
+  );
+
+  try {
+    if (update.message) {
+      await handleTelegramCommand(env, update.message);
+    }
+  } catch (error) {
+    console.error("Telegram webhook error:", error);
+
+    // Allow a later retry if command processing failed.
+    await env.SIGNAL_DEDUPE.delete(key);
+
+    return response({ error: "Command processing failed." }, 500);
+  }
+
+  return response({ success: true });
+}
+
+// -------------------------
+// WEBHOOK REGISTRATION
+// -------------------------
+
+async function registerTelegramWebhook(env) {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    throw new Error("TELEGRAM_BOT_TOKEN is missing.");
+  }
+
+  if (!env.TELEGRAM_WEBHOOK_SECRET) {
+    throw new Error("TELEGRAM_WEBHOOK_SECRET is missing.");
+  }
+
+  const webhookUrl =
+    "https://sir-bot-ai-backend.rolix717.workers.dev/telegram-webhook";
+
+  const url =
+    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      url: webhookUrl,
+      secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+      allowed_updates: ["message"],
+      drop_pending_updates: false
+    }),
+    signal: AbortSignal.timeout(15000)
+  });
+
+  const data = await res.json();
+
+  if (!res.ok || data.ok !== true) {
+    throw new Error(
+      `Webhook registration failed: ${data.description ?? res.status}`
+    );
+  }
+
+  return {
+    success: true,
+    message: "Telegram webhook registered successfully."
+  };
+}
+
+// -------------------------
 // AUTOMATIC CRON
 // -------------------------
 
@@ -875,6 +1158,28 @@ export default {
     }
 
     try {
+      // Telegram webhook endpoint.
+      if (path === "/telegram-webhook") {
+        if (request.method !== "POST") {
+          return response({ error: "POST method required." }, 405);
+        }
+
+        return await telegramWebhook(request, env);
+      }
+
+      // Protected one-time webhook setup.
+      if (path === "/telegram-set-webhook") {
+        if (request.method !== "POST") {
+          return response({ error: "POST method required." }, 405);
+        }
+
+        if (!authorized(request, env)) {
+          return response({ error: "Unauthorized." }, 401);
+        }
+
+        return response(await registerTelegramWebhook(env));
+      }
+
       if (path === "/health") {
         return response({
           success: true,
@@ -887,6 +1192,8 @@ export default {
             env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID
               ? "configured"
               : "missing",
+          telegramWebhook:
+            env.TELEGRAM_WEBHOOK_SECRET ? "configured" : "missing",
           kv: env.SIGNAL_DEDUPE ? "configured" : "missing",
           trading: "disabled",
           checkedAt: new Date().toISOString()
@@ -922,10 +1229,7 @@ export default {
           url.searchParams.get("timeframe") || "M5";
 
         if (!TIMEFRAMES.includes(timeframe)) {
-          return response(
-            { error: "Use M5, M15, or H1." },
-            400
-          );
+          return response({ error: "Use M5, M15, or H1." }, 400);
         }
 
         const candles = await getCandles(env, timeframe);
@@ -942,10 +1246,7 @@ export default {
           url.searchParams.get("timeframe") || "M5";
 
         if (!TIMEFRAMES.includes(timeframe)) {
-          return response(
-            { error: "Use M5, M15, or H1." },
-            400
-          );
+          return response({ error: "Use M5, M15, or H1." }, 400);
         }
 
         const candles = await getCandles(env, timeframe);
@@ -964,17 +1265,11 @@ export default {
 
       if (path === "/analyze-and-notify") {
         if (request.method !== "POST") {
-          return response(
-            { error: "POST method required." },
-            405
-          );
+          return response({ error: "POST method required." }, 405);
         }
 
         if (!authorized(request, env)) {
-          return response(
-            { error: "Unauthorized." },
-            401
-          );
+          return response({ error: "Unauthorized." }, 401);
         }
 
         return response(await runAnalysis(env, true));
@@ -982,17 +1277,11 @@ export default {
 
       if (path === "/telegram-test") {
         if (request.method !== "POST") {
-          return response(
-            { error: "POST method required." },
-            405
-          );
+          return response({ error: "POST method required." }, 405);
         }
 
         if (!authorized(request, env)) {
-          return response(
-            { error: "Unauthorized." },
-            401
-          );
+          return response({ error: "Unauthorized." }, 401);
         }
 
         await sendTelegram(
@@ -1006,22 +1295,22 @@ export default {
         });
       }
 
-      return response(
-        {
-          error: "Route not found.",
-          routes: [
-            "/health",
-            "/market-price",
-            "/market-check",
-            "/indicators",
-            "/market-candles",
-            "/analyze-live",
-            "/analyze-and-notify",
-            "/telegram-test"
-          ]
-        },
-        404
-      );
+      return response({
+        error: "Route not found.",
+        routes: [
+          "/health",
+          "/market-price",
+          "/market-check",
+          "/indicators",
+          "/market-candles",
+          "/analyze-live",
+          "/analyze-and-notify",
+          "/telegram-test",
+          "/telegram-webhook",
+          "/telegram-set-webhook"
+        ]
+      }, 404);
+
     } catch (error) {
       console.error("Worker error:", error);
 
