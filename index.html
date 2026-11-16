@@ -1,281 +1,404 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#080d18">
-
-    <title>SIR BOT AI | Gold Trading</title>
-
-    <link rel="stylesheet" href="style.css?v=5">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080a0f">
+<title>SIR BOT AI | Professional Trading Terminal</title>
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 
 <body>
 
+<div class="app">
+
+<!-- SIDEBAR -->
+
+<aside class="sidebar" id="sidebar">
+
+    <div class="brand">
+        <div class="brand-icon">S</div>
+        <div>
+            <h2>SIR BOT <span>AI</span></h2>
+            <small>GOLD TERMINAL</small>
+        </div>
+    </div>
+
+    <div class="nav-label">WORKSPACE</div>
+
+    <nav class="navigation">
+
+        <button class="nav-item active" data-page="overview">
+            <span>◈</span> Overview
+        </button>
+
+        <button class="nav-item" data-page="market">
+            <span>◉</span> Live Market
+        </button>
+
+        <button class="nav-item" data-page="intelligence">
+            <span>✦</span> AI Intelligence
+        </button>
+
+        <button class="nav-item" data-page="indicators">
+            <span>⌁</span> Indicators
+        </button>
+
+        <button class="nav-item" data-page="risk">
+            <span>◇</span> Risk Center
+        </button>
+
+        <button class="nav-item" data-page="account">
+            <span>▣</span> Account
+        </button>
+
+    </nav>
+
+    <div class="sidebar-bottom">
+
+        <div class="system-box">
+            <span class="live-dot"></span>
+            <div>
+                <b>SYSTEM STATUS</b>
+                <small id="sidebarStatus">Connecting...</small>
+            </div>
+        </div>
+
+        <div class="sidebar-brand">
+            SIR BOT AI © 2026
+        </div>
+
+    </div>
+
+</aside>
+
+
+<!-- MAIN AREA -->
+
+<main class="main">
+
 <header class="topbar">
 
-    <a class="brand" href="#">
-        <span class="brand-mark">S</span>
+    <button class="mobile-menu" id="menuBtn">☰</button>
 
-        <span>
-            SIR BOT <b>AI</b>
-            <small>GOLD EDITION</small>
+    <div>
+        <div class="top-title" id="pageTitle">Overview</div>
+        <div class="top-subtitle">SIR BOT AI / XAUUSD</div>
+    </div>
+
+    <div class="top-actions">
+        <span class="market-indicator">
+            <span class="live-dot"></span>
+            MARKET DATA
         </span>
-    </a>
 
-    <button class="menu" id="menuBtn">☰</button>
-
-    <nav id="nav">
-        <a href="#dashboard">Dashboard</a>
-        <a href="#market">Live Market</a>
-        <a href="#analysis">AI Analysis</a>
-        <a href="#risk">Risk Controls</a>
-    </nav>
+        <span class="version">GOLD EDITION</span>
+    </div>
 
 </header>
 
-<main>
 
-<!-- HERO -->
+<!-- OVERVIEW DASHBOARD -->
 
-<section class="hero">
+<section class="page active" id="page-overview">
 
-    <div class="eyebrow">
-        <i></i> AI-POWERED TRADING PLATFORM
+    <div class="welcome">
+        <div>
+            <span class="eyebrow">TRADING CONTROL CENTER</span>
+            <h1>Welcome to <span>SIR BOT AI.</span></h1>
+            <p>Your intelligent XAUUSD market analysis terminal.</p>
+        </div>
+
+        <span class="preview-badge">PREVIEW MODE</span>
     </div>
 
-    <h1>
-        Trade gold with<br>
-        <span>intelligent analysis.</span>
-    </h1>
+    <div class="metric-grid">
 
-    <p>
-        SIR BOT AI analyzes XAUUSD market data,
-        identifies potential opportunities and
-        supports disciplined risk management.
-    </p>
+        <article class="metric-card highlight">
+            <span>GOLD PRICE</span>
+            <h2 id="overviewPrice">Loading...</h2>
+            <small>XAUUSD / USD</small>
+        </article>
 
-    <a class="primary" href="#dashboard">
-        Open dashboard <span>→</span>
-    </a>
+        <article class="metric-card">
+            <span>AI DECISION</span>
+            <h2 id="overviewDecision">WAITING</h2>
+            <small id="overviewTrend">Awaiting analysis</small>
+        </article>
 
-    <div class="hero-note">
-        XAUUSD ONLY <b>•</b>
-        LIVE MARKET DATA <b>•</b>
-        RISK FIRST
+        <article class="metric-card">
+            <span>AI CONFIDENCE</span>
+            <h2 id="overviewConfidence">—</h2>
+            <small>Analysis confidence</small>
+        </article>
+
+        <article class="metric-card">
+            <span>EXECUTION</span>
+            <h2 class="warning-text">DISABLED</h2>
+            <small>MT5 integration pending</small>
+        </article>
+
     </div>
+
+    <div class="content-grid">
+
+        <article class="card">
+            <div class="card-heading">
+                <div>
+                    <span class="eyebrow">MARKET OVERVIEW</span>
+                    <h3>Live Gold Market</h3>
+                </div>
+                <span class="status-pill" id="marketStatus">CONNECTING</span>
+            </div>
+
+            <div class="price-display" id="mainPrice">Loading...</div>
+
+            <div class="three-stats">
+                <div>
+                    <small>BID</small>
+                    <b id="mainBid">—</b>
+                </div>
+                <div>
+                    <small>ASK</small>
+                    <b id="mainAsk">—</b>
+                </div>
+                <div>
+                    <small>SPREAD</small>
+                    <b id="mainSpread">—</b>
+                </div>
+            </div>
+
+            <button class="gold-button" data-open="market">
+                Open Market Dashboard →
+            </button>
+        </article>
+
+        <article class="card">
+            <div class="card-heading">
+                <div>
+                    <span class="eyebrow">ARTIFICIAL INTELLIGENCE</span>
+                    <h3>Latest AI Analysis</h3>
+                </div>
+                <span class="ai-symbol">✦</span>
+            </div>
+
+            <div class="decision-display" id="overviewAI">WAITING</div>
+
+            <p class="muted" id="overviewReason">
+                No analysis available yet.
+            </p>
+
+            <button class="gold-button" data-open="intelligence">
+                Open AI Dashboard →
+            </button>
+        </article>
+
+    </div>
+
+    <article class="card">
+        <div class="card-heading">
+            <div>
+                <span class="eyebrow">SYSTEM HEALTH</span>
+                <h3>Connection Monitor</h3>
+            </div>
+        </div>
+
+        <div class="connection-grid">
+            <div>
+                <span class="live-dot"></span>
+                <b>Cloudflare Backend</b>
+                <small id="backendStatus">Checking...</small>
+            </div>
+
+            <div>
+                <span class="live-dot"></span>
+                <b>Market Data</b>
+                <small id="marketConnection">Checking...</small>
+            </div>
+
+            <div>
+                <span class="live-dot"></span>
+                <b>AI Provider</b>
+                <small id="aiConnection">Checking...</small>
+            </div>
+
+            <div>
+                <span class="warning-dot"></span>
+                <b>MT5 Execution</b>
+                <small>Not connected</small>
+            </div>
+        </div>
+    </article>
 
 </section>
 
 
-<!-- DASHBOARD -->
+<!-- LIVE MARKET DASHBOARD -->
 
-<section class="section" id="dashboard">
+<section class="page" id="page-market">
 
-    <div class="section-head">
-
-        <div>
-            <div class="eyebrow">CONTROL CENTER</div>
-            <h2>Trading dashboard</h2>
-        </div>
-
-        <span class="badge demo">PREVIEW MODE</span>
-
+    <div class="page-heading">
+        <span class="eyebrow">MARKET INTELLIGENCE</span>
+        <h1>Live Market</h1>
+        <p>Real-time XAUUSD market information.</p>
     </div>
 
+    <article class="card market-hero">
+        <span class="eyebrow">XAUUSD / GOLD</span>
+        <div class="price-display large" id="marketPrice">Loading...</div>
+        <span class="status-pill" id="marketStatus2">CONNECTING</span>
 
-    <!-- BACKEND STATUS -->
-
-    <div class="status-card">
-
-        <div>
-            <span class="muted">AI SYSTEM STATUS</span>
-
-            <h3 id="backendStatus">
-                Checking connection
-            </h3>
-
-            <p id="backendMessage">
-                Connecting to SIR BOT AI backend...
-            </p>
+        <div class="three-stats">
+            <div><small>BID</small><b id="marketBid">—</b></div>
+            <div><small>ASK</small><b id="marketAsk">—</b></div>
+            <div><small>SPREAD</small><b id="marketSpread">—</b></div>
         </div>
 
-        <button class="outline" id="connectBtn">
-            Connection details
+        <div class="market-meta">
+            <span>Timeframe: M1</span>
+            <span>Last update: <b id="marketUpdated">Waiting...</b></span>
+        </div>
+
+        <button class="gold-button" id="refreshMarket">
+            Refresh Market Data
         </button>
 
-    </div>
-
-
-    <!-- LIVE MARKET -->
-
-    <article class="panel" id="market">
-
-        <div class="panel-title">
-            <h3>Live Gold Market</h3>
-
-            <span class="badge safe" id="marketStatus">
-                CONNECTING
-            </span>
-        </div>
-
-        <div class="muted">XAUUSD / GOLD</div>
-
-        <div style="margin-top:20px">
-
-            <span class="muted">LATEST PRICE</span>
-
-            <div id="goldPrice"
-                 style="font-size:38px;font-weight:800;margin-top:8px">
-                Loading...
-            </div>
-
-        </div>
-
-        <div class="stats">
-
-            <article class="stat">
-                <span>Bid</span>
-                <strong id="goldBid">—</strong>
-            </article>
-
-            <article class="stat">
-                <span>Ask</span>
-                <strong id="goldAsk">—</strong>
-            </article>
-
-            <article class="stat">
-                <span>Spread</span>
-                <strong id="goldSpread">—</strong>
-            </article>
-
-        </div>
-
-        <div class="line"></div>
-
-        <div class="row">
-            <span>Market</span>
-            <b>XAUUSD</b>
-        </div>
-
-        <div class="row">
-            <span>Timeframe</span>
-            <b>M1</b>
-        </div>
-
-        <div class="row">
-            <span>Last update</span>
-            <b id="marketUpdated">Waiting...</b>
-        </div>
-
-        <p class="tiny" id="marketMessage">
-            Waiting for live market data.
-        </p>
-
-        <button class="outline" id="refreshMarket">
-            Refresh market data
-        </button>
-
+        <p class="muted" id="marketMessage">Waiting for market data...</p>
     </article>
 
+</section>
 
-    <!-- ACCOUNT INFORMATION -->
 
-    <div class="stats">
+<!-- AI DASHBOARD -->
 
-        <article class="stat">
-            <span>Account Balance</span>
-            <strong>—</strong>
-            <small>MT5 connection pending</small>
-        </article>
+<section class="page" id="page-intelligence">
 
-        <article class="stat">
-            <span>Equity</span>
-            <strong>—</strong>
-            <small>MT5 connection pending</small>
-        </article>
-
-        <article class="stat">
-            <span>Today's P/L</span>
-            <strong>—</strong>
-            <small>No live account data</small>
-        </article>
-
+    <div class="page-heading">
+        <span class="eyebrow">AI POWERED ANALYSIS</span>
+        <h1>AI Intelligence</h1>
+        <p>Automated analysis of genuine XAUUSD market candles.</p>
     </div>
 
+    <article class="card ai-card">
 
-    <!-- AI ANALYSIS -->
-
-    <article class="panel" id="analysis">
-
-        <div class="panel-title">
+        <div class="card-heading">
             <h3>AI Market Decision</h3>
-
-            <span class="badge">XAUUSD</span>
+            <span class="ai-symbol">✦</span>
         </div>
 
-        <div class="decision" id="aiDecision">
-            WAITING
+        <div class="decision-display" id="aiDecision">WAITING</div>
+
+        <div class="three-stats">
+            <div><small>TREND</small><b id="aiTrend">—</b></div>
+            <div><small>CONFIDENCE</small><b id="aiConfidence">—</b></div>
+            <div><small>CANDLES</small><b id="aiCandles">—</b></div>
         </div>
 
-        <p class="muted" id="aiStatus">
-            AI is waiting for market analysis.
-        </p>
-
-        <div class="line"></div>
-
-        <div class="row">
-            <span>Trend</span>
-            <b id="aiTrend">—</b>
-        </div>
-
-        <div class="row">
-            <span>Confidence</span>
-            <b id="aiConfidence">—</b>
-        </div>
-
-        <div class="row">
-            <span>Candles received</span>
-            <b id="aiCandles">—</b>
-        </div>
-
-        <div class="row">
-            <span>Execution</span>
-            <b>DISABLED</b>
-        </div>
-
-        <div class="line"></div>
+        <div class="divider"></div>
 
         <h3>AI Reasoning</h3>
-
-        <p id="aiReasoning" class="muted">
-            Press the analyze button to inspect
-            the latest XAUUSD market data.
+        <p class="muted" id="aiReasoning">
+            Run an analysis to receive market insights.
         </p>
 
-        <p id="aiWarning" class="tiny">
-            AI analysis is not a guaranteed trading signal.
+        <p class="tiny" id="aiWarning">
+            Trading involves risk. AI analysis is not a guaranteed signal.
         </p>
 
-        <p id="aiTimestamp" class="tiny">
-            No analysis performed yet.
-        </p>
+        <p class="tiny" id="aiTimestamp">No analysis performed.</p>
 
-        <button class="primary" id="analyzeButton">
-            ANALYZE XAUUSD
+        <button class="gold-button" id="analyzeButton">
+            ✦ ANALYZE XAUUSD
         </button>
 
     </article>
 
+</section>
 
-    <!-- RISK CONTROLS -->
 
-    <article class="panel" id="risk">
+<!-- INDICATORS DASHBOARD -->
 
-        <div class="panel-title">
-            <h3>Risk Settings</h3>
+<section class="page" id="page-indicators">
 
-            <span class="badge safe">PROPOSED</span>
+    <div class="page-heading">
+        <span class="eyebrow">TECHNICAL ANALYSIS</span>
+        <h1>Indicators</h1>
+        <p>Calculated from genuine market candles.</p>
+    </div>
+
+    <div class="indicator-grid">
+
+        <article class="metric-card">
+            <span>EMA 20</span>
+            <h2 id="ema20">—</h2>
+            <small>Short-term average</small>
+        </article>
+
+        <article class="metric-card">
+            <span>EMA 50</span>
+            <h2 id="ema50">—</h2>
+            <small>Longer-term average</small>
+        </article>
+
+        <article class="metric-card">
+            <span>RSI 14</span>
+            <h2 id="rsi14">—</h2>
+            <small id="rsiCondition">Waiting for data</small>
+        </article>
+
+        <article class="metric-card">
+            <span>MACD</span>
+            <h2 id="macd">—</h2>
+            <small id="macdCondition">Waiting for data</small>
+        </article>
+
+        <article class="metric-card">
+            <span>ATR 14</span>
+            <h2 id="atr14">—</h2>
+            <small>Volatility measurement</small>
+        </article>
+
+        <article class="metric-card">
+            <span>MARKET STRUCTURE</span>
+            <h2 class="small-value" id="structure">—</h2>
+            <small>Recent price structure</small>
+        </article>
+
+    </div>
+
+    <article class="card">
+        <div class="card-heading">
+            <h3>Technical Trend</h3>
+            <span class="status-pill" id="indicatorTrend">WAITING</span>
+        </div>
+
+        <p class="muted" id="indicatorMessage">
+            Waiting for technical indicator calculations.
+        </p>
+
+        <button class="gold-button" id="refreshIndicators">
+            Refresh Indicators
+        </button>
+    </article>
+
+</section>
+
+
+<!-- RISK DASHBOARD -->
+
+<section class="page" id="page-risk">
+
+    <div class="page-heading">
+        <span class="eyebrow">CAPITAL PROTECTION</span>
+        <h1>Risk Center</h1>
+        <p>Configure proposed risk parameters.</p>
+    </div>
+
+    <article class="card">
+
+        <div class="card-heading">
+            <h3>Risk Configuration</h3>
+            <span class="status-pill">PROPOSED</span>
         </div>
 
         <label for="riskPct">
@@ -283,152 +406,109 @@
             <b id="riskValue">1%</b>
         </label>
 
-        <input
-            id="riskPct"
-            type="range"
-            min="0.25"
-            max="2"
-            step="0.25"
-            value="1"
-        >
+        <input type="range"
+               id="riskPct"
+               min="0.25"
+               max="2"
+               step="0.25"
+               value="1">
 
         <div class="range-labels">
             <span>0.25%</span>
             <span>2%</span>
         </div>
 
-        <div class="row">
+        <div class="risk-row">
             <span>Daily loss limit</span>
             <b>3% proposed</b>
         </div>
 
-        <div class="row">
-            <span>Market</span>
-            <b>XAUUSD only</b>
+        <div class="risk-row">
+            <span>Trading instrument</span>
+            <b>XAUUSD</b>
         </div>
 
-        <div class="row">
-            <span>Position sizing</span>
+        <div class="risk-row">
+            <span>Automated position sizing</span>
             <b>Not activated</b>
         </div>
 
+        <div class="risk-row">
+            <span>Trade execution</span>
+            <b class="warning-text">DISABLED</b>
+        </div>
+
         <p class="tiny">
-            Risk settings are displayed for planning only.
-            They do not control live MT5 trades.
+            These settings are for planning only and do not control live trades.
         </p>
 
     </article>
 
+</section>
 
-    <!-- TRADING HISTORY -->
 
-    <article class="panel">
+<!-- ACCOUNT DASHBOARD -->
 
-        <div class="panel-title">
-            <h3>Recent Trades</h3>
-            <span class="muted">History unavailable</span>
-        </div>
+<section class="page" id="page-account">
 
-        <div class="empty">
-            No trades to display yet.
-        </div>
+    <div class="page-heading">
+        <span class="eyebrow">ACCOUNT MANAGEMENT</span>
+        <h1>Trading Account</h1>
+        <p>MT5 account integration is not yet active.</p>
+    </div>
 
+    <div class="metric-grid">
+
+        <article class="metric-card">
+            <span>BALANCE</span>
+            <h2>—</h2>
+            <small>Awaiting MT5 connection</small>
+        </article>
+
+        <article class="metric-card">
+            <span>EQUITY</span>
+            <h2>—</h2>
+            <small>Awaiting MT5 connection</small>
+        </article>
+
+        <article class="metric-card">
+            <span>DAILY P/L</span>
+            <h2>—</h2>
+            <small>No live account data</small>
+        </article>
+
+        <article class="metric-card">
+            <span>OPEN TRADES</span>
+            <h2>—</h2>
+            <small>Awaiting MT5 connection</small>
+        </article>
+
+    </div>
+
+    <article class="card">
+        <h3>MT5 Integration</h3>
+        <p class="muted">
+            A secure Windows VPS trading bridge is required
+            before account information or trade execution
+            can be connected.
+        </p>
+
+        <span class="status-pill">NOT CONNECTED</span>
     </article>
 
 </section>
 
 
-<!-- ROADMAP -->
-
-<section class="section" id="how">
-
-    <div class="eyebrow">BUILD ROADMAP</div>
-
-    <h2>From analysis to execution.</h2>
-
-    <div class="steps">
-
-        <div>
-            <b>01</b>
-            <h3>AI Analysis</h3>
-            <p>
-                Analyze gold price action and market conditions.
-            </p>
-        </div>
-
-        <div>
-            <b>02</b>
-            <h3>Risk Calculation</h3>
-            <p>
-                Calculate position sizes and enforce risk limits.
-            </p>
-        </div>
-
-        <div>
-            <b>03</b>
-            <h3>MT5 Integration</h3>
-            <p>
-                Connect a secure trading bridge after testing.
-            </p>
-        </div>
-
-    </div>
-
-</section>
-
-
-<!-- FOOTER -->
-
-<footer class="section">
-
-    <h3>SIR BOT AI</h3>
-
-    <p class="muted">
-        Intelligent Gold Market Analysis.
-    </p>
-
-    <p class="tiny">
-        Automated trading is currently disabled.
-        Market analysis does not guarantee profits.
-    </p>
-
-    <p class="tiny">
-        © 2026 SIR BOT AI. All rights reserved.
-    </p>
-
+<footer>
+    <b>SIR BOT AI</b>
+    <span>GOLD EDITION © 2026</span>
+    <small>Analysis only. Trading execution disabled.</small>
 </footer>
 
 </main>
+</div>
 
-
-<!-- CONNECTION DIALOG -->
-
-<dialog id="infoDialog">
-
-    <h3>SIR BOT AI CONNECTION</h3>
-
-    <p>
-        Market data is supplied by RealMarketAPI.
-        AI analysis is powered by Tchavi.
-    </p>
-
-    <p>
-        MT5 execution is not connected.
-        Trading remains disabled.
-    </p>
-
-    <button class="outline" id="closeDialog">
-        Close
-    </button>
-
-    <button class="primary" id="okDialog">
-        OK
-    </button>
-
-</dialog>
-
-
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 
 </body>
 </html>
