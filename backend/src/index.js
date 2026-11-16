@@ -1,84 +1,212 @@
 const ALLOWED_ORIGIN = "https://rolix717-code.github.io";
 
-function json(data, status = 200, extraHeaders = {}) {
-  return new Response(JSON.stringify(data, null, 2), {
+function response(data, status = 200) {
+  return new Response(JSON.stringify(data), {
     status,
     headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      ...extraHeaders
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Cache-Control": "no-store"
     }
   });
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
+
     const origin = request.headers.get("Origin");
 
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      "Vary": "Origin"
-    };
-
     if (origin && origin !== ALLOWED_ORIGIN) {
-      return json({ error: "Origin not allowed" }, 403);
+      return response({ error: "Origin not allowed" }, 403);
     }
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
-        headers: corsHeaders
+        headers: {
+          "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type"
+        }
       });
     }
 
     const url = new URL(request.url);
 
-    // Check backend status
+    // HEALTH CHECK
     if (url.pathname === "/health" && request.method === "GET") {
-      return json({
+      return response({
         project: "SIR BOT AI",
         status: "online",
         market: "XAUUSD",
-        ai: "not connected",
-        mt5: "not connected",
-        trading: "disabled",
-        message: "Backend foundation is running."
-      }, 200, corsHeaders);
+        ai: "Tchavi configured",
+        trading: "disabled"
+      });
     }
 
-    // AI analysis endpoint
+    // AI GOLD ANALYSIS
     if (url.pathname === "/analyze" && request.method === "POST") {
-      let body;
+
+      if (!env.TCHAVI_API_KEY) {
+        return response({
+          error: "Tchavi API key is missing"
+        }, 500);
+      }
+
+      let data;
 
       try {
-        body = await request.json();
+        data = await request.json();
       } catch {
-        return json({
-          error: "Send valid JSON."
-        }, 400, corsHeaders);
+        return response({
+          error: "Invalid JSON request"
+        }, 400);
       }
 
-      if (body.market && body.market !== "XAUUSD") {
-        return json({
-          error: "SIR BOT AI supports XAUUSD only."
-        }, 400, corsHeaders);
+      if (data.market !== "XAUUSD") {
+        return response({
+          error: "SIR BOT AI only analyzes XAUUSD"
+        }, 400);
       }
 
-      return json({
-        project: "SIR BOT AI",
-        market: "XAUUSD",
-        decision: "WAIT",
-        confidence: null,
-        reason: "AI and verified live gold market data are not connected yet.",
-        execution: "disabled"
-      }, 503, corsHeaders);
+      if (
+        !Array.isArray(data.candles) ||
+        data.candles.length < 20 ||
+        data.candles.length > 200
+      ) {
+        return response({
+          error: "Provide between 20 and 200 market candles"
+        }, 400);
+      }
+
+      const systemPrompt = `
+You are the market analysis intelligence of SIR BOT AI.
+
+Your only market is XAUUSD (Gold).
+
+Analyze supplied OHLCV candle data.
+Evaluate:
+- Market structure
+- Trend direction
+- Support and resistance
+- Momentum
+- Candlestick patterns
+- Possible liquidity areas
+- Risk and reward
+
+Never invent market prices or missing data.
+
+Return ONLY valid JSON using this structure:
+
+{
+  "decision": "BUY, SELL, or WAIT",
+  "confidence": 0,
+  "trend": "BULLISH, BEARISH, or SIDEWAYS",
+  "reasoning": "Explanation of analysis",
+  "entry": null,
+  "stop_loss": null,
+  "take_profit": null,
+  "risk_warning": "Trading involves risk"
+}
+
+If the evidence is insufficient, choose WAIT.
+
+This is analysis only. Do not claim to have executed trades.
+`;
+
+      try {
+
+        const aiResponse = await fetch(
+          "https://tchavi.com/api/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${env.TCHAVI_API_KEY}`
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              temperature: 0.2,
+              messages: [
+                {
+                  role: "system",
+                  content: systemPrompt
+                },
+                {
+                  role: "user",
+                  content: JSON.stringify({
+                    market: "XAUUSD",
+                    timeframe: data.timeframe || "M5",
+                    candles: data.candles
+                  })
+                }
+              ]
+            })
+          }
+        );
+
+        if (!aiResponse.ok) {
+          return response({
+            error: "AI provider request failed",
+            provider_status: aiResponse.status
+          }, 502);
+        }
+
+        const result = await aiResponse.json();
+
+        const content =
+          result.choices?.[0]?.message?.content;
+
+        if (!content) {
+          return response({
+            error: "AI returned an empty response"
+          }, 502);
+        }
+
+        const cleanContent = content
+          .replace(/```json/gi, "")
+          .replace(/```/g, "")
+          .trim();
+
+        const analysis = JSON.parse(cleanContent);
+
+        const validDecisions = ["BUY", "SELL", "WAIT"];
+
+        if (
+          !validDecisions.includes(analysis.decision) ||
+          !Number.isFinite(analysis.confidence) ||
+          analysis.confidence < 0 ||
+          analysis.confidence > 100
+        ) {
+          return response({
+            error: "AI returned an invalid analysis"
+          }, 502);
+        }
+
+        return response({
+          project: "SIR BOT AI",
+          market: "XAUUSD",
+          ai: "connected",
+          execution: "disabled",
+          analysis
+        });
+
+      } catch (error) {
+
+        return response({
+          error: "AI analysis failed",
+          details: error.message
+        }, 500);
+
+      }
     }
 
-    return json({
+    return response({
       project: "SIR BOT AI",
-      message: "Backend is running. Visit /health to check its status."
-    }, 200, corsHeaders);
+      status: "running",
+      message: "Welcome to SIR BOT AI"
+    });
   }
 };
