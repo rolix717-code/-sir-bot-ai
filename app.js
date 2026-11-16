@@ -1,67 +1,127 @@
 const API_BASE = "https://sir-bot-ai-backend.rolix717.workers.dev";
 
-const nav = document.getElementById('nav');
+// NAVIGATION
+const nav = document.getElementById("nav");
+const menuBtn = document.getElementById("menuBtn");
 
-document.getElementById('menuBtn').addEventListener('click', () => {
-    nav.classList.toggle('show');
+menuBtn.addEventListener("click", () => {
+    nav.classList.toggle("open");
 });
 
-nav.querySelectorAll('a').forEach(a => {
-    a.addEventListener('click', () => nav.classList.remove('show'));
+nav.querySelectorAll("a").forEach(link => {
+    link.addEventListener("click", () => {
+        nav.classList.remove("open");
+    });
 });
 
-const dialog = document.getElementById('infoDialog');
+// CONNECTION DIALOG
+const dialog = document.getElementById("infoDialog");
 
-document.getElementById('connectBtn').addEventListener('click', () => {
+document.getElementById("connectBtn").addEventListener("click", () => {
     dialog.showModal();
 });
 
-document.getElementById('closeDialog').addEventListener('click', () => {
+document.getElementById("closeDialog").addEventListener("click", () => {
     dialog.close();
 });
 
-document.getElementById('okDialog').addEventListener('click', () => {
+document.getElementById("okDialog").addEventListener("click", () => {
     dialog.close();
 });
 
-const slider = document.getElementById('riskPct');
+// RISK SLIDER
+const slider = document.getElementById("riskPct");
 
-slider.addEventListener('input', () => {
-    document.getElementById('riskValue').textContent = slider.value + '%';
+slider.addEventListener("input", () => {
+    document.getElementById("riskValue").textContent =
+        slider.value + "%";
 });
 
 // BACKEND CONNECTION
 async function checkBackend() {
-    const statusTitle = document.querySelector('.status-card h3');
-    const statusText = document.querySelector('.status-card p');
-    const statusDot = document.querySelector('.status-dot');
+    const statusTitle = document.querySelector(".status-card h3");
+    const statusMessage = document.getElementById("backendMessage");
 
     try {
-        const response = await fetch(`${API_BASE}/health`);
-        const data = await response.json();
+        const result = await fetch(`${API_BASE}/health`);
+        const data = await result.json();
 
-        if (!response.ok || data.status !== 'online') {
-            throw new Error('Backend unavailable');
+        if (!result.ok || data.status !== "online") {
+            throw new Error("Backend unavailable");
         }
 
         statusTitle.innerHTML =
             '<span class="status-dot" style="background:#41d69b"></span> Backend online';
 
-        statusText.textContent =
-            'Cloudflare backend responding. Tchavi is configured. Live data and MT5 trading are not connected.';
-
-        console.log('SIR BOT AI backend:', data);
+        statusMessage.textContent =
+            "Cloudflare connected. Tchavi and market data configuration checked. MT5 execution disabled.";
 
     } catch (error) {
         statusTitle.innerHTML =
             '<span class="status-dot" style="background:#e15b5b"></span> Backend offline';
 
-        statusText.textContent =
-            'Unable to reach the SIR BOT AI backend. Please try again.';
-            
-        console.error(error);
+        statusMessage.textContent =
+            "Unable to connect to SIR BOT AI backend.";
     }
 }
 
+// LIVE GOLD MARKET
+async function loadGoldPrice() {
+
+    const status = document.getElementById("marketStatus");
+    const price = document.getElementById("goldPrice");
+    const bid = document.getElementById("goldBid");
+    const ask = document.getElementById("goldAsk");
+    const spread = document.getElementById("goldSpread");
+    const updated = document.getElementById("marketUpdated");
+    const message = document.getElementById("marketMessage");
+
+    try {
+
+        const result = await fetch(
+            `${API_BASE}/market-check?timeframe=M1`,
+            { cache: "no-store" }
+        );
+
+        const data = await result.json();
+
+        if (!result.ok || data.data_status !== "connected") {
+            throw new Error(data.error || "Market unavailable");
+        }
+
+        const prices = data.prices;
+
+        price.textContent = Number(prices.close).toFixed(3);
+        bid.textContent = Number(prices.bid).toFixed(3);
+        ask.textContent = Number(prices.ask).toFixed(3);
+        spread.textContent = Number(prices.spread).toFixed(3);
+
+        updated.textContent = new Date(
+            data.received_at
+        ).toLocaleTimeString();
+
+        status.textContent = "CONNECTED";
+        status.style.color = "#41d69b";
+
+        message.textContent =
+            "Live XAUUSD price feed connected. Last successful update shown above. Trading remains disabled.";
+
+    } catch (error) {
+
+        status.textContent = "OFFLINE";
+        status.style.color = "#e15b5b";
+
+        message.textContent =
+            "Market update failed: " + error.message;
+
+        console.error("Gold price error:", error);
+    }
+}
+
+// INITIAL CONNECTIONS
 checkBackend();
+loadGoldPrice();
+
+// AUTOMATIC REFRESH EVERY 60 SECONDS
 setInterval(checkBackend, 30000);
+setInterval(loadGoldPrice, 60000);
