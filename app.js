@@ -1,88 +1,100 @@
-const API_BASE =
-"https://sir-bot-ai-backend.rolix717.workers.dev";
+const API_BASE = "https://sir-bot-ai-backend.rolix717.workers.dev";
 
 document.addEventListener("DOMContentLoaded", () => {
 
     const $ = id => document.getElementById(id);
 
-    // NAVIGATION
+    // DASHBOARD NAVIGATION
 
-    const nav = $("nav");
-    const menuBtn = $("menuBtn");
+    const pages = document.querySelectorAll(".page");
+    const navItems = document.querySelectorAll(".nav-item");
+    const sidebar = $("sidebar");
 
-    if (menuBtn && nav) {
-        menuBtn.addEventListener("click", () => {
-            nav.classList.toggle("open");
+    const titles = {
+        overview: "Overview",
+        market: "Live Market",
+        intelligence: "AI Intelligence",
+        indicators: "Technical Indicators",
+        risk: "Risk Center",
+        account: "Trading Account"
+    };
+
+    function openPage(name) {
+
+        pages.forEach(page => {
+            page.classList.toggle(
+                "active",
+                page.id === `page-${name}`
+            );
         });
 
-        nav.querySelectorAll("a").forEach(link => {
-            link.addEventListener("click", () => {
-                nav.classList.remove("open");
-            });
+        navItems.forEach(item => {
+            item.classList.toggle(
+                "active",
+                item.dataset.page === name
+            );
         });
+
+        $("pageTitle").textContent =
+            titles[name] || "Overview";
+
+        sidebar.classList.remove("open");
+
+        history.replaceState(null, "", `#${name}`);
     }
 
-
-    // CONNECTION DIALOG
-
-    const dialog = $("infoDialog");
-
-    if ($("connectBtn") && dialog) {
-        $("connectBtn").addEventListener("click", () => {
-            dialog.showModal();
+    navItems.forEach(item => {
+        item.addEventListener("click", () => {
+            openPage(item.dataset.page);
         });
-    }
+    });
 
-    if ($("closeDialog")) {
-        $("closeDialog").addEventListener("click", () => {
-            dialog.close();
+    document.querySelectorAll("[data-open]").forEach(button => {
+        button.addEventListener("click", () => {
+            openPage(button.dataset.open);
         });
-    }
+    });
 
-    if ($("okDialog")) {
-        $("okDialog").addEventListener("click", () => {
-            dialog.close();
-        });
-    }
+    $("menuBtn").addEventListener("click", () => {
+        sidebar.classList.toggle("open");
+    });
 
+    const initialPage = location.hash.replace("#", "");
 
-    // RISK SLIDER
-
-    const slider = $("riskPct");
-
-    if (slider) {
-        slider.addEventListener("input", () => {
-            $("riskValue").textContent =
-                slider.value + "%";
-        });
-    }
+    openPage(
+        titles[initialPage] ? initialPage : "overview"
+    );
 
 
     // API REQUEST
 
-    async function fetchJSON(url) {
+    async function api(endpoint, timeoutMs = 30000) {
 
         const controller = new AbortController();
 
-        const timeout = setTimeout(() => {
-            controller.abort();
-        }, 30000);
+        const timeout = setTimeout(
+            () => controller.abort(),
+            timeoutMs
+        );
 
         try {
 
-            const res = await fetch(url, {
-                method: "GET",
-                cache: "no-store",
-                signal: controller.signal
-            });
+            const result = await fetch(
+                API_BASE + endpoint,
+                {
+                    method: "GET",
+                    cache: "no-store",
+                    signal: controller.signal
+                }
+            );
 
-            const data = await res.json();
+            const data = await result.json();
 
-            if (!res.ok) {
+            if (!result.ok) {
                 throw new Error(
                     data.details ||
                     data.error ||
-                    `HTTP ${res.status}`
+                    `HTTP ${result.status}`
                 );
             }
 
@@ -94,124 +106,170 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
-    // BACKEND STATUS
+    // CONNECTION STATUS
 
     async function checkBackend() {
 
-        const status = $("backendStatus");
-        const message = $("backendMessage");
-
-        status.textContent = "Checking connection";
-
         try {
 
-            const data = await fetchJSON(
-                `${API_BASE}/health`
-            );
+            const data = await api("/health");
 
-            if (data.status !== "online") {
-                throw new Error("Backend is offline");
-            }
+            $("backendStatus").textContent = "ONLINE";
 
-            status.textContent = "● BACKEND ONLINE";
-            status.style.color = "#41d69b";
+            $("sidebarStatus").textContent = "Backend online";
 
-            message.textContent =
-                "Cloudflare connected | AI: " +
-                data.ai +
-                " | Market data: " +
-                data.market_data +
-                " | Trading: disabled";
+            $("marketConnection").textContent =
+                data.market_data;
+
+            $("aiConnection").textContent = data.ai;
 
         } catch (error) {
 
-            status.textContent = "BACKEND OFFLINE";
-            status.style.color = "#e15b5b";
+            $("backendStatus").textContent = "OFFLINE";
 
-            message.textContent = error.message;
+            $("sidebarStatus").textContent = "Connection failed";
+
+            $("marketConnection").textContent = "Unavailable";
+
+            $("aiConnection").textContent = "Unavailable";
+
+            console.error("Backend:", error);
 
         }
     }
 
 
-    // LIVE GOLD PRICE
+    // LIVE GOLD MARKET
 
-    async function loadGoldPrice() {
-
-        $("marketStatus").textContent = "CONNECTING";
+    async function loadMarket() {
 
         try {
 
-            const data = await fetchJSON(
-                `${API_BASE}/market-check?timeframe=M1`
+            const data = await api(
+                "/market-check?timeframe=M1"
             );
 
             if (!data.prices) {
-                throw new Error("Market data unavailable");
+                throw new Error("No price data received");
             }
 
             const p = data.prices;
 
-            const close = Number(p.close);
+            const price = Number(p.close);
             const bid = Number(p.bid);
             const ask = Number(p.ask);
 
-            if (![close, bid, ask].every(Number.isFinite)) {
+            if (![price, bid, ask].every(Number.isFinite)) {
                 throw new Error("Invalid price data");
             }
 
-            $("goldPrice").textContent = close.toFixed(3);
+            const spread = Number(
+                p.spread ?? (ask - bid)
+            );
 
-            $("goldBid").textContent = bid.toFixed(3);
+            const formattedPrice = price.toFixed(3);
 
-            $("goldAsk").textContent = ask.toFixed(3);
+            $("overviewPrice").textContent = formattedPrice;
+            $("mainPrice").textContent = formattedPrice;
+            $("marketPrice").textContent = formattedPrice;
 
-            $("goldSpread").textContent =
-                (ask - bid).toFixed(3);
+            $("mainBid").textContent = bid.toFixed(3);
+            $("mainAsk").textContent = ask.toFixed(3);
+            $("mainSpread").textContent = spread.toFixed(3);
+
+            $("marketBid").textContent = bid.toFixed(3);
+            $("marketAsk").textContent = ask.toFixed(3);
+            $("marketSpread").textContent = spread.toFixed(3);
+
+            $("marketStatus").textContent = "CONNECTED";
+            $("marketStatus2").textContent = "CONNECTED";
 
             $("marketUpdated").textContent =
                 new Date().toLocaleTimeString();
 
-            $("marketStatus").textContent = "CONNECTED";
-
             $("marketMessage").textContent =
-                "XAUUSD market feed connected. Price data only.";
+                "XAUUSD market data received successfully.";
 
         } catch (error) {
 
             $("marketStatus").textContent = "OFFLINE";
+            $("marketStatus2").textContent = "OFFLINE";
 
             $("marketMessage").textContent =
-                "Market error: " + error.message;
+                "Market connection error: " + error.message;
+
+            console.error("Market:", error);
 
         }
     }
 
 
-    // CANDLE DATA
+    // TECHNICAL INDICATORS
 
-    async function loadCandles() {
+    async function loadIndicators() {
 
-        $("aiCandles").textContent = "Loading...";
+        $("indicatorMessage").textContent =
+            "Calculating technical indicators...";
 
         try {
 
-            const data = await fetchJSON(
-                `${API_BASE}/market-candles?timeframe=M1`
+            const data = await api(
+                "/indicators?timeframe=M1"
             );
 
-            $("aiCandles").textContent =
-                data.candle_count + " candles";
+            const i = data.indicators;
 
-            $("aiStatus").textContent =
-                "Market data ready for AI analysis.";
+            if (!i) {
+                throw new Error("Indicator data unavailable");
+            }
+
+            $("ema20").textContent =
+                Number(i.ema20).toFixed(3);
+
+            $("ema50").textContent =
+                Number(i.ema50).toFixed(3);
+
+            $("rsi14").textContent =
+                Number(i.rsi14).toFixed(2);
+
+            $("rsiCondition").textContent =
+                i.rsi_condition || "Calculated";
+
+            if (i.macd) {
+
+                $("macd").textContent =
+                    Number(i.macd.macd).toFixed(3);
+
+                $("macdCondition").textContent =
+                    Number(i.macd.histogram) >= 0
+                        ? "Positive momentum"
+                        : "Negative momentum";
+
+            } else {
+
+                $("macd").textContent = "—";
+                $("macdCondition").textContent = "Unavailable";
+
+            }
+
+            $("atr14").textContent =
+                Number(i.atr14).toFixed(3);
+
+            $("structure").textContent =
+                i.market_structure || "Unavailable";
+
+            $("indicatorTrend").textContent =
+                i.trend || "UNKNOWN";
+
+            $("indicatorMessage").textContent =
+                `${data.candle_count} candles analyzed successfully.`;
 
         } catch (error) {
 
-            $("aiCandles").textContent = "Unavailable";
+            $("indicatorMessage").textContent =
+                "Indicator error: " + error.message;
 
-            $("aiStatus").textContent =
-                "Candle error: " + error.message;
+            console.error("Indicators:", error);
 
         }
     }
@@ -224,37 +282,58 @@ document.addEventListener("DOMContentLoaded", () => {
         const button = $("analyzeButton");
 
         button.disabled = true;
-        button.textContent = "ANALYZING...";
+        button.textContent = "ANALYZING XAUUSD...";
 
-        $("aiStatus").textContent =
-            "SIR BOT AI is analyzing XAUUSD...";
+        $("aiStatus") &&
+            ($("aiStatus").textContent = "AI analysis running");
 
         $("aiReasoning").textContent =
-            "Fetching genuine market candles...";
+            "Analyzing market structure, momentum and volatility...";
 
         try {
 
-            const data = await fetchJSON(
-                `${API_BASE}/analyze-live?timeframe=M1`
+            const data = await api(
+                "/analyze-live?timeframe=M1",
+                60000
             );
-
-            if (!data.analysis) {
-                throw new Error("No AI analysis returned");
-            }
 
             const a = data.analysis;
 
-            $("aiDecision").textContent = a.decision;
+            if (!a) {
+                throw new Error("AI response unavailable");
+            }
+
+            const decision = a.decision.toUpperCase();
+
+            $("aiDecision").textContent = decision;
+
+            $("aiDecision").className =
+                "decision-display " + decision.toLowerCase();
+
+            $("overviewDecision").textContent = decision;
+            $("overviewAI").textContent = decision;
+
+            $("overviewAI").className =
+                "decision-display " + decision.toLowerCase();
+
+            $("aiTrend").textContent = a.trend;
 
             $("aiConfidence").textContent =
                 a.confidence + "%";
 
-            $("aiTrend").textContent = a.trend;
+            $("overviewConfidence").textContent =
+                a.confidence + "%";
+
+            $("overviewTrend").textContent =
+                a.trend;
 
             $("aiCandles").textContent =
-                data.candle_count + " candles";
+                data.candle_count;
 
             $("aiReasoning").textContent =
+                a.reasoning;
+
+            $("overviewReason").textContent =
                 a.reasoning;
 
             $("aiWarning").textContent =
@@ -265,30 +344,64 @@ document.addEventListener("DOMContentLoaded", () => {
                 "Last analysis: " +
                 new Date().toLocaleString();
 
-            $("aiStatus").textContent =
-                "AI ANALYSIS COMPLETED";
+            // Update indicators from the same analysis response
 
-            $("aiDecision").style.color =
-                a.decision === "BUY"
-                    ? "#41d69b"
-                    : a.decision === "SELL"
-                    ? "#e15b5b"
-                    : "#e9b75c";
+            if (data.indicators) {
+                updateIndicators(data.indicators);
+            }
 
         } catch (error) {
 
-            $("aiStatus").textContent =
-                "ANALYSIS FAILED";
-
             $("aiReasoning").textContent =
-                error.message;
+                "Analysis failed: " + error.message;
+
+            console.error("AI:", error);
 
         } finally {
 
             button.disabled = false;
-            button.textContent = "ANALYZE XAUUSD";
+            button.textContent = "✦ ANALYZE XAUUSD";
 
         }
+    }
+
+
+    // DISPLAY INDICATORS
+
+    function updateIndicators(i) {
+
+        $("ema20").textContent =
+            Number(i.ema20).toFixed(3);
+
+        $("ema50").textContent =
+            Number(i.ema50).toFixed(3);
+
+        $("rsi14").textContent =
+            Number(i.rsi14).toFixed(2);
+
+        $("rsiCondition").textContent =
+            i.rsi_condition;
+
+        if (i.macd) {
+
+            $("macd").textContent =
+                Number(i.macd.macd).toFixed(3);
+
+            $("macdCondition").textContent =
+                i.macd.histogram >= 0
+                    ? "Positive momentum"
+                    : "Negative momentum";
+
+        }
+
+        $("atr14").textContent =
+            Number(i.atr14).toFixed(3);
+
+        $("structure").textContent =
+            i.market_structure;
+
+        $("indicatorTrend").textContent =
+            i.trend;
     }
 
 
@@ -296,7 +409,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     $("refreshMarket").addEventListener(
         "click",
-        loadGoldPrice
+        loadMarket
+    );
+
+    $("refreshIndicators").addEventListener(
+        "click",
+        loadIndicators
     );
 
     $("analyzeButton").addEventListener(
@@ -305,17 +423,26 @@ document.addEventListener("DOMContentLoaded", () => {
     );
 
 
-    // START SYSTEM
+    // RISK SLIDER
+
+    $("riskPct").addEventListener("input", event => {
+
+        $("riskValue").textContent =
+            event.target.value + "%";
+
+    });
+
+
+    // INITIAL LOAD
 
     checkBackend();
-    loadGoldPrice();
-    loadCandles();
+    loadMarket();
+    loadIndicators();
 
-
-    // AUTOMATIC REFRESH
+    // AUTOMATIC MARKET REFRESH
 
     setInterval(checkBackend, 30000);
 
-    setInterval(loadGoldPrice, 60000);
+    setInterval(loadMarket, 60000);
 
 });
