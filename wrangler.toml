@@ -11,7 +11,7 @@ enabled = true
 
 [[kv_namespaces]]
 binding = "SIGNAL_DEDUPE"
-id = "PASTE_YOUR_FULL_KV_NAMESPACE_ID_HERE"
+id = "dfe7a150bc8a4d518d9d7a069962b742"
 
 [triggers]
 crons = ["*/5 * * * *"]
