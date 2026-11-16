@@ -3,12 +3,12 @@ const API_BASE = "https://sir-bot-ai-backend.rolix717.workers.dev";
 const nav = document.getElementById('nav');
 
 document.getElementById('menuBtn').addEventListener('click', () => {
-    nav.classList.toggle('open');
+    nav.classList.toggle('show');
 });
 
-nav.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
-    nav.classList.remove('open');
-}));
+nav.querySelectorAll('a').forEach(a => {
+    a.addEventListener('click', () => nav.classList.remove('show'));
+});
 
 const dialog = document.getElementById('infoDialog');
 
@@ -30,21 +30,38 @@ slider.addEventListener('input', () => {
     document.getElementById('riskValue').textContent = slider.value + '%';
 });
 
-// SIR BOT AI BACKEND CONNECTION
+// BACKEND CONNECTION
 async function checkBackend() {
+    const statusTitle = document.querySelector('.status-card h3');
+    const statusText = document.querySelector('.status-card p');
+    const statusDot = document.querySelector('.status-dot');
+
     try {
         const response = await fetch(`${API_BASE}/health`);
         const data = await response.json();
 
-        console.log("Backend response:", data);
-
-        if (response.ok) {
-            document.title = "SIR BOT AI - Backend Online";
-            console.log("SIR BOT AI backend connected.");
+        if (!response.ok || data.status !== 'online') {
+            throw new Error('Backend unavailable');
         }
+
+        statusTitle.innerHTML =
+            '<span class="status-dot" style="background:#41d69b"></span> Backend online';
+
+        statusText.textContent =
+            'Cloudflare backend responding. Tchavi is configured. Live data and MT5 trading are not connected.';
+
+        console.log('SIR BOT AI backend:', data);
+
     } catch (error) {
-        console.error("Backend connection failed:", error);
+        statusTitle.innerHTML =
+            '<span class="status-dot" style="background:#e15b5b"></span> Backend offline';
+
+        statusText.textContent =
+            'Unable to reach the SIR BOT AI backend. Please try again.';
+            
+        console.error(error);
     }
 }
 
 checkBackend();
+setInterval(checkBackend, 30000);
