@@ -8,3 +8,10 @@ workers_dev = true
 
 [observability]
 enabled = true
+
+[[kv_namespaces]]
+binding = "SIGNAL_DEDUPE"
+id = "PASTE_YOUR_FULL_KV_NAMESPACE_ID_HERE"
+
+[triggers]
+crons = ["*/5 * * * *"]
