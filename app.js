@@ -21,7 +21,7 @@ document.addEventListener("DOMContentLoaded", () => {
    signedUser=user;authScreen.classList.add("hidden");appShell.classList.remove("hidden");
    document.querySelectorAll(".admin-only").forEach(x=>x.classList.toggle("hidden",user.role!=="admin"));
    $("sidebarStatus").textContent=`Signed in: ${user.name||user.email||"Admin"}`;
-   checkBackend();loadMarket();loadIndicators();
+   checkBackend();loadMarket();loadIndicators();loadBridges();
    setInterval(checkBackend,30000);setInterval(loadMarket,60000);
  }
  function message(id,text){$(id).textContent=text;}
@@ -37,7 +37,7 @@ document.addEventListener("DOMContentLoaded", () => {
    e.preventDefault();message("registerMessage","Submitting registration...");
    try{
      const data=await request("/auth/register",{method:"POST",body:JSON.stringify({name:$("registerName").value,email:$("registerEmail").value,password:$("registerPassword").value})});
-     message("registerMessage",data.message||"Registration received. Await admin activation.");$("registerForm").reset();
+     message("registerMessage",data.message||"Account created. You can now sign in.");$("registerForm").reset();
    }catch(err){message("registerMessage",err.message);}
  });
  $("logoutButton").addEventListener("click",async()=>{
@@ -155,6 +155,22 @@ document.addEventListener("DOMContentLoaded", () => {
    }catch(err){message("visionMessage","Analysis failed: "+(err.name==="AbortError"?"Request timed out. Try a smaller image.":err.message));}
    finally{visionAnalyze.disabled=!visionFile.files?.[0];visionAnalyze.textContent="✦ ANALYZE CHART IMAGE";}
  });
+
+
+ async function loadBridges(){
+   const box=$("bridgeList"); if(!box)return; box.textContent="Loading connections...";
+   try{const d=await request("/mt5/bridges");box.innerHTML="";
+     if(!d.bridges?.length){box.textContent="No MT5 terminals paired yet.";return;}
+     d.bridges.forEach(b=>{const row=document.createElement("div");row.className="risk-row";const label=document.createElement("span");label.textContent=`${b.label} · ${b.symbol} · ${b.status}`;const btn=document.createElement("button");btn.className="table-action disable";btn.textContent="REVOKE";btn.disabled=b.status!=="active";btn.addEventListener("click",async()=>{try{await request(`/mt5/bridges/${encodeURIComponent(b.id)}/revoke`,{method:"POST",body:"{}"});loadBridges();}catch(e){message("bridgeMessage",e.message);}});row.append(label,btn);box.appendChild(row);});
+   }catch(e){box.textContent=e.message;}
+ }
+ const createBridge=$("createBridge");
+ if(createBridge)createBridge.addEventListener("click",async()=>{createBridge.disabled=true;message("bridgeMessage","Creating a private MT5 connection...");
+   try{const d=await request("/mt5/pair",{method:"POST",body:JSON.stringify({label:$("bridgeLabel").value})});$("bridgeToken").value=d.bridgeToken;$("bridgeTokenBox").classList.remove("hidden");message("bridgeMessage","Connection created. Copy the token now; it cannot be displayed again.");loadBridges();}
+   catch(e){message("bridgeMessage",e.message);}finally{createBridge.disabled=false;}
+ });
+ if($("refreshBridges"))$("refreshBridges").addEventListener("click",loadBridges);
+ if($("copyBridgeToken"))$("copyBridgeToken").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("bridgeToken").value);message("bridgeMessage","Token copied.");}catch{message("bridgeMessage","Select and copy the token manually.");}});
 
  async function loadUsers(){
    $("usersTable").innerHTML='<tr><td colspan="5">Loading users...</td></tr>';
