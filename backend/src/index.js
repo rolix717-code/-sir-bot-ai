@@ -3,7 +3,8 @@ const MARKET_BASE = "https://api.realmarketapi.com";
 const TCHAVI_URL = "https://tchavi.com/api/v1/chat/completions";
 
 const SYMBOL = "XAUUSD";
-const TIMEFRAMES = ["M5", "M15", "H1"];
+const TIMEFRAMES = ["M5", "M15", "H1", "H4"];
+const A_PLUS_MIN_SCORE = 85;
 const MIN_CONFIDENCE = 70;
 const SIGNAL_TTL = 86400;
 const MAX_M5_AGE_MS = 20 * 60 * 1000;
@@ -224,6 +225,104 @@ function indicators(candles) {
 }
 
 // -------------------------
+// ADVANCED PRICE-ACTION INTELLIGENCE
+// -------------------------
+
+function advancedPriceAction(candles) {
+  const recent = candles.slice(-60);
+  const last = recent.at(-1);
+  const prior = recent.slice(0, -1);
+  const rangeHigh = Math.max(...prior.slice(-20).map(c => c.high));
+  const rangeLow = Math.min(...prior.slice(-20).map(c => c.low));
+  const midpoint = (rangeHigh + rangeLow) / 2;
+
+  const bullishSweep = last.low < rangeLow && last.close > rangeLow;
+  const bearishSweep = last.high > rangeHigh && last.close < rangeHigh;
+  const bullishBOS = last.close > rangeHigh;
+  const bearishBOS = last.close < rangeLow;
+
+  const a = recent.at(-3), b = recent.at(-2), c = last;
+  const bullishFVG = a.high < c.low;
+  const bearishFVG = a.low > c.high;
+
+  // Approximate the last opposing candle before a strong displacement candle.
+  let bullishOrderBlock = null;
+  let bearishOrderBlock = null;
+  if (recent.length >= 5) {
+    const impulse = recent.at(-1);
+    const body = Math.abs(impulse.close - impulse.open);
+    const averageRange = recent.slice(-15, -1).reduce((sum, x) => sum + (x.high - x.low), 0) / Math.max(1, recent.slice(-15, -1).length);
+    if (body > averageRange * 1.2) {
+      const opposite = [...recent.slice(-6, -1)].reverse().find(x =>
+        impulse.close > impulse.open ? x.close < x.open : x.close > x.open
+      );
+      if (opposite && impulse.close > impulse.open) bullishOrderBlock = { low: opposite.low, high: opposite.high };
+      if (opposite && impulse.close < impulse.open) bearishOrderBlock = { low: opposite.low, high: opposite.high };
+    }
+  }
+
+  return {
+    rangeHigh, rangeLow, equilibrium: midpoint,
+    zone: last.close > midpoint ? "PREMIUM" : last.close < midpoint ? "DISCOUNT" : "EQUILIBRIUM",
+    liquiditySweep: bullishSweep ? "BULLISH_SWEEP" : bearishSweep ? "BEARISH_SWEEP" : "NONE",
+    structureBreak: bullishBOS ? "BULLISH_BOS" : bearishBOS ? "BEARISH_BOS" : "NO_CONFIRMED_BOS",
+    fairValueGap: bullishFVG ? "BULLISH_FVG" : bearishFVG ? "BEARISH_FVG" : "NONE",
+    bullishOrderBlock, bearishOrderBlock,
+    candleBody: Math.abs(last.close - last.open),
+    candleRange: last.high - last.low
+  };
+}
+
+function buildIntelligence(market) {
+  const frames = ["H4", "H1", "M15", "M5"];
+  const trends = Object.fromEntries(frames.map(tf => [tf, market[tf].indicators.trend]));
+  const priceAction = Object.fromEntries(frames.map(tf => [tf, advancedPriceAction(market[tf].candles)]));
+  const m5 = market.M5.indicators;
+  const m15 = market.M15.indicators;
+  const h1 = market.H1.indicators;
+  const h4 = market.H4.indicators;
+
+  function score(direction) {
+    let points = 0;
+    const reasons = [];
+    const opposite = direction === "BUY" ? "BEARISH" : "BULLISH";
+    const aligned = frames.filter(tf => trends[tf] === (direction === "BUY" ? "BULLISH" : "BEARISH")).length;
+    points += aligned * 12.5;
+    reasons.push(`${aligned}/4 timeframe trends aligned`);
+
+    const rsiGood = direction === "BUY" ? m5.rsi >= 50 && m5.rsi <= 72 : m5.rsi <= 50 && m5.rsi >= 28;
+    if (rsiGood) { points += 10; reasons.push("M5 RSI supports momentum"); }
+    else reasons.push("M5 RSI is not in preferred momentum range");
+
+    const macdGood = direction === "BUY" ? m5.macd?.value > 0 : m5.macd?.value < 0;
+    if (macdGood) { points += 8; reasons.push("M5 MACD confirms direction"); }
+
+    const pa = priceAction.M5;
+    const sweepGood = direction === "BUY" ? pa.liquiditySweep === "BULLISH_SWEEP" : pa.liquiditySweep === "BEARISH_SWEEP";
+    const bosGood = direction === "BUY" ? pa.structureBreak === "BULLISH_BOS" : pa.structureBreak === "BEARISH_BOS";
+    const fvgGood = direction === "BUY" ? pa.fairValueGap === "BULLISH_FVG" : pa.fairValueGap === "BEARISH_FVG";
+    if (sweepGood) { points += 15; reasons.push("M5 liquidity sweep detected"); }
+    if (bosGood) { points += 15; reasons.push("M5 break of structure detected"); }
+    if (fvgGood) { points += 8; reasons.push("M5 fair value gap detected"); }
+
+    const correctZone = direction === "BUY" ? pa.zone === "DISCOUNT" : pa.zone === "PREMIUM";
+    if (correctZone) { points += 8; reasons.push(`Price is in ${pa.zone.toLowerCase()} zone`); }
+
+    const volatilityOk = m5.atr && m5.atr > 0 && pa.candleRange <= m5.atr * 2.5;
+    if (volatilityOk) { points += 5; reasons.push("Volatility is within filter"); }
+
+    const higherConflict = [h4, h1, m15].some(x => x.trend === opposite);
+    if (higherConflict) { points -= 20; reasons.push("Higher-timeframe conflict penalty"); }
+    return { score: Math.max(0, Math.min(100, Math.round(points))), reasons, aligned, higherConflict };
+  }
+
+  const buy = score("BUY");
+  const sell = score("SELL");
+  const selected = buy.score >= sell.score ? { decision: "BUY", ...buy } : { decision: "SELL", ...sell };
+  return { trends, priceAction, buy, sell, ...selected, threshold: A_PLUS_MIN_SCORE };
+}
+
+// -------------------------
 // AI
 // -------------------------
 
@@ -257,7 +356,7 @@ async function analyzeAI(market, env) {
 
   const system = `
 You are SIR BOT AI, a cautious XAUUSD market analysis assistant.
-Analyze the supplied M5, M15 and H1 data.
+Analyze the supplied H4, H1, M15 and M5 data. H4 is the directional context; M5 is the entry timeframe.
 Consider:
 - Multi-timeframe trend alignment
 - EMA structure
@@ -279,7 +378,7 @@ Return ONLY JSON:
 Decision: BUY, SELL, or WAIT.
 Trend: BULLISH, BEARISH, or SIDEWAYS.
 Confidence: number from 0 to 100.
-If the timeframes disagree, data is unclear, or the setup is weak, choose WAIT.
+If the timeframes disagree, data is unclear, or the setup is weak, choose WAIT. Do not fabricate a high confidence score. The deterministic intelligence score is a separate gate; only setups scoring at least 85/100 can become trade signals.
 Confidence is not a guaranteed win probability.
 `;
 
@@ -309,6 +408,12 @@ Confidence is not a guaranteed win probability.
 function makeSignal(analysis, ind) {
   if (analysis.decision === "WAIT") return { decision: "WAIT", reason: analysis.reasoning };
   if (analysis.confidence < MIN_CONFIDENCE) return { decision: "WAIT", reason: "AI confidence is below the required threshold." };
+  if (!Number.isFinite(analysis.setupScore) || analysis.setupScore < A_PLUS_MIN_SCORE) {
+    return { decision: "WAIT", reason: `A+ filter not met. Deterministic setup score: ${analysis.setupScore ?? "N/A"}/100; minimum required: ${A_PLUS_MIN_SCORE}.` };
+  }
+  if (analysis.decision !== analysis.setupDirection) {
+    return { decision: "WAIT", reason: `AI direction conflicts with the deterministic intelligence engine (${analysis.setupDirection}, ${analysis.setupScore}/100).` };
+  }
   if (!ind.atr || ind.atr <= 0) return { decision: "WAIT", reason: "ATR is unavailable." };
 
   if (analysis.decision === "BUY" && analysis.trend !== "BULLISH") {
@@ -341,7 +446,7 @@ function makeSignal(analysis, ind) {
     tp1: Number(tp1.toFixed(3)),
     tp2: Number(tp2.toFixed(3)),
     tp3: Number(tp3.toFixed(3)),
-    confidence: analysis.confidence, trend: analysis.trend,
+    confidence: analysis.confidence, setupScore: analysis.setupScore, trend: analysis.trend,
     candleTime: ind.candleTime, reasoning: analysis.reasoning,
     riskWarning: analysis.risk_warning, status: "UNEXECUTED"
   };
@@ -384,6 +489,7 @@ function formatSignal(signal) {
 ━━━━━━━━━━━━━━━━━━
 📈 TREND: ${signal.trend}
 🧠 AI SCORE: ${signal.confidence}/100
+🏆 A+ SETUP SCORE: ${signal.setupScore ?? "N/A"}/100
 🕒 CANDLE: ${signal.candleTime}
 📝 ANALYSIS:
 ${signal.reasoning}
@@ -589,8 +695,9 @@ function checkFreshness(latestPrice) {
 function higherTimeframesAgree(decision, market) {
   const m15 = market.M15.indicators.trend;
   const h1 = market.H1.indicators.trend;
-  if (decision === "BUY") return m15 === "BULLISH" && h1 === "BULLISH";
-  if (decision === "SELL") return m15 === "BEARISH" && h1 === "BEARISH";
+  const h4 = market.H4.indicators.trend;
+  if (decision === "BUY") return m15 === "BULLISH" && h1 === "BULLISH" && h4 === "BULLISH";
+  if (decision === "SELL") return m15 === "BEARISH" && h1 === "BEARISH" && h4 === "BEARISH";
   return false;
 }
 
@@ -608,7 +715,7 @@ function aiInput(market) {
   return {
     symbol: SYMBOL,
     entryTimeframe: "M5",
-    confirmationTimeframes: ["M15", "H1"],
+    confirmationTimeframes: ["M15", "H1", "H4"],
     timeframes: data
   };
 }
@@ -638,7 +745,11 @@ async function runAnalysis(env, notify = false) {
     };
   }
 
-  const analysis = await analyzeAI(aiInput(market), env);
+  const intelligence = buildIntelligence(market);
+  const analysis = await analyzeAI({ ...aiInput(market), deterministicIntelligence: intelligence }, env);
+  analysis.setupScore = intelligence.score;
+  analysis.setupDirection = intelligence.decision;
+  analysis.intelligenceReasons = intelligence.reasons;
   let signal = makeSignal(analysis, market.M5.indicators);
 
   if (signal.decision !== "WAIT" && !higherTimeframesAgree(signal.decision, market)) {
@@ -657,7 +768,9 @@ async function runAnalysis(env, notify = false) {
     market: {
       M5: market.M5.indicators,
       M15: market.M15.indicators,
-      H1: market.H1.indicators
+      H1: market.H1.indicators,
+      H4: market.H4.indicators,
+      intelligence
     },
     telegram,
     alertsAllowed: true,
@@ -885,7 +998,8 @@ SIR BOT AI
   const trendLine = [
     `M5: ${market.M5?.trend || "N/A"}`,
     `M15: ${market.M15?.trend || "N/A"}`,
-    `H1: ${market.H1?.trend || "N/A"}`
+    `H1: ${market.H1?.trend || "N/A"}`,
+    `H4: ${market.H4?.trend || "N/A"}`
   ].join(" | ");
 
   if (signal?.decision === "BUY" || signal?.decision === "SELL") {
@@ -908,6 +1022,7 @@ ${trendLine}
 🧠 AI ORIGINAL DECISION: ${analysis?.decision ?? "N/A"}
 📈 AI TREND: ${analysis?.trend ?? "N/A"}
 🧠 AI SCORE: ${analysis?.confidence ?? "N/A"}/100
+🏆 A+ SETUP SCORE: ${analysis?.setupScore ?? "N/A"}/100
 📊 MULTI-TIMEFRAME:
 ${trendLine}
 ━━━━━━━━━━━━━━━━━━
@@ -1030,14 +1145,14 @@ export default {
 
       if (path === "/indicators") {
         const timeframe = url.searchParams.get("timeframe") || "M5";
-        if (!TIMEFRAMES.includes(timeframe)) return response({ error: "Use M5, M15, or H1." }, 400);
+        if (!TIMEFRAMES.includes(timeframe)) return response({ error: "Use M5, M15, H1, or H4." }, 400);
         const candles = await getCandles(env, timeframe);
         return response({ success: true, timeframe, indicators: indicators(candles) });
       }
 
       if (path === "/market-candles") {
         const timeframe = url.searchParams.get("timeframe") || "M5";
-        if (!TIMEFRAMES.includes(timeframe)) return response({ error: "Use M5, M15, or H1." }, 400);
+        if (!TIMEFRAMES.includes(timeframe)) return response({ error: "Use M5, M15, H1, or H4." }, 400);
         const candles = await getCandles(env, timeframe);
         return response({ success: true, symbol: SYMBOL, timeframe, candles });
       }
