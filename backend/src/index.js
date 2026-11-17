@@ -10,8 +10,6 @@ const SIGNAL_TTL = 86400;
 const MAX_M5_AGE_MS = 20 * 60 * 1000;
 const ACCURACY_PREFIX = "accuracy:signal:";
 const ACCURACY_TTL = 30 * 24 * 60 * 60;
-const MAX_SIGNAL_AGE_MS = 24 * 60 * 60 * 1000;
-const VALIDATION_VERSION = "live-forward-test-v1";
 
 function response(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -550,11 +548,6 @@ async function recordSignalForTracking(env, signal) {
     entryTimestamp: Date.parse(signal.candleTime),
     status: "PENDING",
     outcome: null,
-    validationVersion: VALIDATION_VERSION,
-    validationMethod: "Subsequent M5 candle OHLC; spread and slippage excluded",
-    highestPriceAfterEntry: signal.entry,
-    lowestPriceAfterEntry: signal.entry,
-    candlesChecked: 0,
     createdAt: new Date().toISOString()
   };
 
@@ -590,14 +583,13 @@ async function listAccuracyRecords(env) {
 
 async function monitorPendingSignals(env) {
   if (!env.SIGNAL_DEDUPE) throw new Error("SIGNAL_DEDUPE KV binding is missing.");
+
   const records = await listAccuracyRecords(env);
   const pending = records.filter(r => r.status === "PENDING" && Number.isFinite(r.entryTimestamp));
-  if (!pending.length) return { checked: 0, resolved: [], expired: [] };
+  if (!pending.length) return { checked: 0, resolved: [] };
 
   const candles = await getCandles(env, "M5");
   const resolved = [];
-  const expired = [];
-  const now = Date.now();
 
   for (const record of pending) {
     const laterCandles = candles.filter(c => c.timestamp > record.entryTimestamp);
@@ -605,14 +597,13 @@ async function monitorPendingSignals(env) {
 
     for (const candle of laterCandles) {
       const isBuy = record.decision === "BUY";
-      record.candlesChecked = (record.candlesChecked || 0) + 1;
-      record.highestPriceAfterEntry = Math.max(record.highestPriceAfterEntry ?? record.entry, candle.high);
-      record.lowestPriceAfterEntry = Math.min(record.lowestPriceAfterEntry ?? record.entry, candle.low);
       const stopHit = isBuy ? candle.low <= record.stopLoss : candle.high >= record.stopLoss;
       const targetHit = isBuy ? candle.high >= record.takeProfit : candle.low <= record.takeProfit;
 
       if (stopHit && targetHit) {
-        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "SL and TP1 touched in the same M5 candle; conservatively counted as SL." };
+        // If both levels occur inside one M5 candle, their order is unknowable.
+        // Count it conservatively as a loss rather than assuming TP was first.
+        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "SL and TP1 touched in the same candle; counted conservatively as SL." };
       } else if (stopHit) {
         result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "Stop loss reached." };
       } else if (targetHit) {
@@ -626,83 +617,37 @@ async function monitorPendingSignals(env) {
         record.resolutionReason = result.reason;
         record.resolutionCandle = candle.time;
         record.resolvedAt = new Date().toISOString();
-        record.validationData = "M5 OHLC; intrabar sequence unknown; spread/slippage not included";
+
         const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
         await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
         resolved.push(record);
         break;
       }
     }
-
-    if (!result && now - record.entryTimestamp > MAX_SIGNAL_AGE_MS) {
-      record.status = "EXPIRED";
-      record.outcome = "EXPIRED";
-      record.resolutionReason = "Neither TP1 nor SL was observed within the 24-hour validation window.";
-      record.resolvedAt = new Date().toISOString();
-      const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
-      await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
-      expired.push(record);
-    } else if (!result) {
-      const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
-      await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
-    }
   }
-  return { checked: pending.length, resolved, expired };
+
+  return { checked: pending.length, resolved };
 }
 
 function calculateAccuracy(records) {
   const wins = records.filter(r => r.status === "RESOLVED" && r.outcome === "WIN").length;
   const losses = records.filter(r => r.status === "RESOLVED" && r.outcome === "LOSS").length;
   const pending = records.filter(r => r.status === "PENDING").length;
-  const expired = records.filter(r => r.status === "EXPIRED").length;
   const resolved = wins + losses;
+
   return {
-    total: records.length, wins, losses, pending, expired, resolved,
-    winRate: resolved ? Number((wins / resolved * 100).toFixed(1)) : null,
-    sampleSizeNote: resolved < 100
-      ? "Early sample: collect at least 100 resolved signals before drawing conclusions."
-      : "100+ resolved signals available; continue monitoring across market conditions."
+    total: records.length,
+    wins,
+    losses,
+    pending,
+    resolved,
+    winRate: resolved ? Number((wins / resolved * 100).toFixed(1)) : null
   };
 }
 
 async function getAccuracyReport(env) {
   const records = await listAccuracyRecords(env);
   return { ...calculateAccuracy(records), records: records.slice(0, 30) };
-}
-
-async function getLiveValidation(env) {
-  const [latestPrice, report] = await Promise.all([
-    getLatestPrice(env, "M5"),
-    getAccuracyReport(env)
-  ]);
-  return {
-    success: true,
-    engine: "SIR BOT AI Live Validation",
-    version: VALIDATION_VERSION,
-    market: SYMBOL,
-    dataFresh: latestPrice.fresh,
-    latestPrice: latestPrice.price,
-    candleTime: latestPrice.candleTime,
-    candleAgeMinutes: latestPrice.ageMinutes,
-    validation: {
-      totalTracked: report.total,
-      wins: report.wins,
-      losses: report.losses,
-      pending: report.pending,
-      expired: report.expired,
-      resolved: report.resolved,
-      winRate: report.winRate,
-      requiredResolvedSample: 100,
-      sampleSizeNote: report.sampleSizeNote,
-      limitations: [
-        "Uses subsequent M5 candle OHLC, not broker execution receipts.",
-        "Spread, commission and slippage are not included.",
-        "If TP1 and SL occur in the same candle, the result is conservatively a loss.",
-        "Signals are analysis-only; MT5 execution is disabled."
-      ]
-    },
-    checkedAt: new Date().toISOString()
-  };
 }
 
 function formatAccuracyReport(report) {
@@ -718,9 +663,8 @@ Resolved signals: ${report.resolved}
 🎯 TP1 hit rate: ${rate}
 ━━━━━━━━━━━━━━━━━━
 Method: first TP1 or SL touched on later M5 candles.
-Same-candle TP/SL = SL. Expired signals are excluded from win rate.
-Spread, slippage and broker execution costs are NOT included.
-This is a forward-test record, not a profitability guarantee.
+If both are touched in one candle, it is counted as an SL.
+This is historical signal tracking, not guaranteed future performance.
 MT5 execution: DISABLED
 `.trim();
 }
@@ -813,9 +757,6 @@ async function runAnalysis(env, notify = false) {
   }
 
   let telegram = { sent: false, duplicate: false };
-  if (signal.decision === "BUY" || signal.decision === "SELL") {
-    await recordSignalForTracking(env, signal);
-  }
   if (notify && signal.decision !== "WAIT") telegram = await sendUniqueSignal(env, signal);
 
   return {
@@ -862,7 +803,7 @@ Available commands:
 /help - Show commands
 /status - Check system status
 /signal - Request fresh XAUUSD analysis
-/performance - View tracked signal results\n/validation - Check live data freshness and forward-test status
+/performance - View tracked signal results
 ━━━━━━━━━━━━━━━━━━
 Market: XAUUSD
 Analysis: M5 / M15 / H1
@@ -959,31 +900,6 @@ MT5 execution: DISABLED
   if (command === "/performance") {
     const report = await getAccuracyReport(env);
     await sendTelegramToChat(env, chatId, formatAccuracyReport(report));
-    return;
-  }
-
-  if (command === "/validation") {
-    const status = await getLiveValidation(env);
-    const v = status.validation;
-    await sendTelegramToChat(env, chatId, `
-🧪 SIR BOT AI — LIVE VALIDATION
-Market data: ${status.dataFresh ? "FRESH" : "STALE"}
-XAUUSD: ${status.latestPrice}
-M5 candle age: ${status.candleAgeMinutes} min
-━━━━━━━━━━━━━━━━━━
-Tracked: ${v.totalTracked}
-Wins: ${v.wins}
-Losses: ${v.losses}
-Pending: ${v.pending}
-Expired: ${v.expired}
-Resolved: ${v.resolved}
-TP1 hit rate: ${v.winRate === null ? "N/A" : `${v.winRate}%`}
-${v.sampleSizeNote}
-━━━━━━━━━━━━━━━━━━
-Spread/slippage: NOT INCLUDED
-Broker execution: NOT VERIFIED
-MT5 execution: DISABLED
-`.trim());
     return;
   }
 
@@ -1140,16 +1056,11 @@ Resolved candle: ${resolved.resolutionCandle}
 MT5 execution: DISABLED
 `.trim());
     }
-    for (const expired of tracking.expired) {
-      await sendTelegram(env, `⌛ SIR BOT AI — SIGNAL EXPIRED
-${expired.decision} ${expired.symbol}
-Entry: ${expired.entry}
-No TP1 or SL was observed within the 24-hour validation window.
-Excluded from win-rate calculations.
-MT5 execution: DISABLED`.trim());
-    }
 
     const result = await runAnalysis(env, false);
+    if (result.success && result.signal && ["BUY", "SELL"].includes(result.signal.decision)) {
+      await recordSignalForTracking(env, result.signal);
+    }
     const message = formatScheduledReport(result);
     await sendTelegram(env, message);
 
@@ -1178,6 +1089,160 @@ SIR BOT AI
   }
 }
 
+
+// -------------------------
+// USER AUTHENTICATION (D1)
+// -------------------------
+const SESSION_DAYS = 7;
+const encoder = new TextEncoder();
+
+function b64url(bytes) {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return b64url(bytes);
+}
+async function sha256(value) {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  return [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+async function passwordHash(password, salt = b64url(crypto.getRandomValues(new Uint8Array(16)))) {
+  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: encoder.encode(salt), iterations: 120000, hash: "SHA-256" }, key, 256);
+  return { salt, hash: b64url(new Uint8Array(bits)) };
+}
+async function verifyPassword(password, salt, expected) {
+  const result = await passwordHash(password, salt);
+  return result.hash === expected;
+}
+async function jsonBody(request) {
+  try { return await request.json(); } catch { return {}; }
+}
+function authResponse(data, status = 200) {
+  return response(data, status);
+}
+async function createSession(env, userId) {
+  const token = randomToken();
+  const tokenHash = await sha256(token);
+  const expires = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
+  await env.DB.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
+    .bind(tokenHash, userId, expires).run();
+  return { token, expiresAt: expires };
+}
+async function currentUser(request, env) {
+  if (!env.DB) throw new Error("D1 binding DB is missing.");
+  const header = request.headers.get("Authorization") || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (!token) return null;
+  const tokenHash = await sha256(token);
+  const row = await env.DB.prepare(`
+    SELECT u.id, u.name, u.email, u.status, u.role, s.expires_at
+    FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = ?
+  `).bind(tokenHash).first();
+  if (!row || row.status !== "active" || Date.parse(row.expires_at) <= Date.now()) return null;
+  return row;
+}
+async function requireAdmin(request, env) {
+  const user = await currentUser(request, env);
+  return user && user.role === "admin" ? user : null;
+}
+async function authRoutes(request, env, path) {
+  if (!env.DB) return authResponse({ error: "D1 binding DB is not configured." }, 500);
+
+  if (path === "/auth/register" && request.method === "POST") {
+    const body = await jsonBody(request);
+    const name = String(body.name || "").trim().slice(0, 80);
+    const email = String(body.email || "").trim().toLowerCase().slice(0, 190);
+    const password = String(body.password || "");
+    if (name.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 10) {
+      return authResponse({ error: "Enter a valid name and email. Password must be at least 10 characters." }, 400);
+    }
+    const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
+    if (existing) return authResponse({ error: "An account with this email already exists." }, 409);
+    const id = crypto.randomUUID();
+    const h = await passwordHash(password);
+    await env.DB.prepare("INSERT INTO users (id,name,email,password_hash,status,role) VALUES (?,?,?,?, 'pending','user')")
+      .bind(id, name, email, `${h.salt}:${h.hash}`).run();
+    return authResponse({ success: true, status: "pending", message: "Registration received. Your account is waiting for admin activation." }, 201);
+  }
+
+  if (path === "/auth/login" && request.method === "POST") {
+    const body = await jsonBody(request);
+    const usernameOrEmail = String(body.username || body.email || "").trim();
+    const password = String(body.password || "");
+    if (!usernameOrEmail || !password) return authResponse({ error: "Enter your login details." }, 400);
+
+    // Admin is bootstrapped from Cloudflare secrets, never from public registration.
+    if (env.ADMIN_USERNAME && env.ADMIN_PASSWORD &&
+        usernameOrEmail.toLowerCase() === String(env.ADMIN_USERNAME).toLowerCase() &&
+        password === env.ADMIN_PASSWORD) {
+      let admin = await env.DB.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
+      if (!admin) {
+        const id = crypto.randomUUID();
+        const h = await passwordHash(env.ADMIN_PASSWORD);
+        await env.DB.prepare("INSERT INTO users (id,name,email,password_hash,status,role) VALUES (?,?,?,?, 'active','admin')")
+          .bind(id, "SIR BOT AI Admin", `admin-${id}@sirbot.local`, `${h.salt}:${h.hash}`).run();
+        admin = { id };
+      } else {
+        await env.DB.prepare("UPDATE users SET status='active' WHERE id=?").bind(admin.id).run();
+      }
+      const session = await createSession(env, admin.id);
+      return authResponse({ success: true, token: session.token, expiresAt: session.expiresAt, user: { name: "SIR BOT AI Admin", role: "admin", status: "active" } });
+    }
+
+    const user = await env.DB.prepare("SELECT * FROM users WHERE lower(email)=lower(?)").bind(usernameOrEmail).first();
+    if (!user) return authResponse({ error: "Invalid login details." }, 401);
+    if (user.status === "pending") return authResponse({ error: "ACCOUNT PENDING ACTIVATION. Please wait for admin approval." }, 403);
+    if (user.status !== "active") return authResponse({ error: "This account is disabled. Contact customer care." }, 403);
+    const [salt, hash] = String(user.password_hash).split(":");
+    if (!salt || !hash || !(await verifyPassword(password, salt, hash))) return authResponse({ error: "Invalid login details." }, 401);
+    const session = await createSession(env, user.id);
+    return authResponse({ success: true, token: session.token, expiresAt: session.expiresAt, user: { id: user.id, name: user.name, email: user.email, role: user.role, status: user.status } });
+  }
+
+  if (path === "/auth/me" && request.method === "GET") {
+    const user = await currentUser(request, env);
+    return user ? authResponse({ success: true, user: { id: user.id, name: user.name, email: user.email, role: user.role, status: user.status } })
+      : authResponse({ error: "Not signed in." }, 401);
+  }
+
+  if (path === "/auth/logout" && request.method === "POST") {
+    const token = (request.headers.get("Authorization") || "").replace(/^Bearer /, "");
+    if (token) await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha256(token)).run();
+    return authResponse({ success: true });
+  }
+
+  if (path === "/admin/users" && request.method === "GET") {
+    const admin = await requireAdmin(request, env);
+    if (!admin) return authResponse({ error: "Admin access required." }, 403);
+    const result = await env.DB.prepare("SELECT id,name,email,status,role,created_at,activated_at FROM users ORDER BY created_at DESC").all();
+    return authResponse({ success: true, users: result.results || [] });
+  }
+
+  const statusMatch = path.match(/^\/admin\/users\/([^/]+)\/status$/);
+  if (statusMatch && request.method === "POST") {
+    const admin = await requireAdmin(request, env);
+    if (!admin) return authResponse({ error: "Admin access required." }, 403);
+    const body = await jsonBody(request);
+    const status = String(body.status || "");
+    if (!["active", "disabled", "pending"].includes(status)) return authResponse({ error: "Status must be active, disabled, or pending." }, 400);
+    const userId = decodeURIComponent(statusMatch[1]);
+    const target = await env.DB.prepare("SELECT id,role FROM users WHERE id=?").bind(userId).first();
+    if (!target || target.role === "admin") return authResponse({ error: "User not found or cannot modify admin." }, 404);
+    await env.DB.prepare("UPDATE users SET status=?, activated_at=CASE WHEN ?='active' THEN CURRENT_TIMESTAMP ELSE activated_at END WHERE id=?")
+      .bind(status, status, userId).run();
+    if (status !== "active") {
+      await env.DB.prepare("DELETE FROM sessions WHERE user_id=?").bind(userId).run();
+    }
+    return authResponse({ success: true, status });
+  }
+  return null;
+}
+
 // -------------------------
 // WORKER
 // -------------------------
@@ -1190,6 +1255,18 @@ export default {
     if (request.method === "OPTIONS") return cors();
 
     try {
+      if (path.startsWith("/auth/") || path === "/admin/users" || path.startsWith("/admin/users/")) {
+        const authResult = await authRoutes(request, env, path);
+        if (authResult) return authResult;
+      }
+
+      // Protect private dashboard endpoints. Public health and Telegram/cron remain available.
+      const protectedPaths = ["/market-price", "/market-check", "/indicators", "/market-candles", "/performance", "/validation", "/analyze-live"];
+      if (protectedPaths.includes(path)) {
+        const user = await currentUser(request, env);
+        if (!user) return response({ error: "Please sign in with an active account." }, 401);
+      }
+
       if (path === "/telegram-webhook") {
         if (request.method !== "POST") return response({ error: "POST method required." }, 405);
         return await telegramWebhook(request, env);
@@ -1251,10 +1328,6 @@ export default {
         return response({ success: true, ...report });
       }
 
-      if (path === "/validation") {
-        return response(await getLiveValidation(env));
-      }
-
       if (path === "/analyze-live") return response(await runAnalysis(env, false));
 
       if (path === "/analyze-and-notify") {
@@ -1274,7 +1347,7 @@ export default {
         error: "Route not found.",
         routes: [
           "/health", "/market-price", "/market-check", "/indicators",
-          "/market-candles", "/performance", "/validation", "/analyze-live", "/analyze-and-notify",
+          "/market-candles", "/performance", "/analyze-live", "/analyze-and-notify",
           "/telegram-test", "/telegram-webhook", "/telegram-set-webhook"
         ]
       }, 404);
