@@ -7,6 +7,8 @@ const TIMEFRAMES = ["M5", "M15", "H1"];
 const MIN_CONFIDENCE = 70;
 const SIGNAL_TTL = 86400;
 const MAX_M5_AGE_MS = 20 * 60 * 1000;
+const ACCURACY_PREFIX = "accuracy:signal:";
+const ACCURACY_TTL = 30 * 24 * 60 * 60;
 
 function response(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -233,6 +235,7 @@ function parseAI(text) {
   if (start < 0 || end <= start) throw new Error("AI did not return valid JSON.");
   return JSON.parse(cleaned.slice(start, end + 1));
 }
+
 function validateAI(data) {
   const decision = String(data.decision ?? "").toUpperCase();
   const trend = String(data.trend ?? "").toUpperCase();
@@ -417,6 +420,150 @@ async function sendUniqueSignal(env, signal) {
 }
 
 // -------------------------
+// SIGNAL ACCURACY TRACKING
+// -------------------------
+
+async function recordSignalForTracking(env, signal) {
+  if (!env.SIGNAL_DEDUPE || !signal || !["BUY", "SELL"].includes(signal.decision)) return;
+  const id = `${signal.candleTime}:${signal.decision}`;
+  const key = ACCURACY_PREFIX + encodeURIComponent(id);
+  const existing = await env.SIGNAL_DEDUPE.get(key);
+  if (existing) return;
+
+  const record = {
+    id,
+    symbol: signal.symbol || SYMBOL,
+    decision: signal.decision,
+    entry: signal.entry,
+    stopLoss: signal.stopLoss,
+    takeProfit: signal.tp1,
+    confidence: signal.confidence,
+    candleTime: signal.candleTime,
+    entryTimestamp: Date.parse(signal.candleTime),
+    status: "PENDING",
+    outcome: null,
+    createdAt: new Date().toISOString()
+  };
+
+  await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
+}
+
+async function listAccuracyRecords(env) {
+  if (!env.SIGNAL_DEDUPE) throw new Error("SIGNAL_DEDUPE KV binding is missing.");
+  const records = [];
+  let cursor;
+
+  do {
+    const page = await env.SIGNAL_DEDUPE.list({
+      prefix: ACCURACY_PREFIX,
+      limit: 1000,
+      ...(cursor ? { cursor } : {})
+    });
+
+    for (const item of page.keys || []) {
+      const raw = await env.SIGNAL_DEDUPE.get(item.name);
+      if (!raw) continue;
+      try {
+        records.push(JSON.parse(raw));
+      } catch (error) {
+        console.error("Skipping invalid accuracy record:", item.name);
+      }
+    }
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+
+  return records.sort((a, b) => (b.entryTimestamp || 0) - (a.entryTimestamp || 0));
+}
+
+async function monitorPendingSignals(env) {
+  if (!env.SIGNAL_DEDUPE) throw new Error("SIGNAL_DEDUPE KV binding is missing.");
+
+  const records = await listAccuracyRecords(env);
+  const pending = records.filter(r => r.status === "PENDING" && Number.isFinite(r.entryTimestamp));
+  if (!pending.length) return { checked: 0, resolved: [] };
+
+  const candles = await getCandles(env, "M5");
+  const resolved = [];
+
+  for (const record of pending) {
+    const laterCandles = candles.filter(c => c.timestamp > record.entryTimestamp);
+    let result = null;
+
+    for (const candle of laterCandles) {
+      const isBuy = record.decision === "BUY";
+      const stopHit = isBuy ? candle.low <= record.stopLoss : candle.high >= record.stopLoss;
+      const targetHit = isBuy ? candle.high >= record.takeProfit : candle.low <= record.takeProfit;
+
+      if (stopHit && targetHit) {
+        // If both levels occur inside one M5 candle, their order is unknowable.
+        // Count it conservatively as a loss rather than assuming TP was first.
+        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "SL and TP1 touched in the same candle; counted conservatively as SL." };
+      } else if (stopHit) {
+        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "Stop loss reached." };
+      } else if (targetHit) {
+        result = { outcome: "WIN", exitPrice: record.takeProfit, reason: "TP1 reached." };
+      }
+
+      if (result) {
+        record.status = "RESOLVED";
+        record.outcome = result.outcome;
+        record.exitPrice = result.exitPrice;
+        record.resolutionReason = result.reason;
+        record.resolutionCandle = candle.time;
+        record.resolvedAt = new Date().toISOString();
+
+        const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
+        await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
+        resolved.push(record);
+        break;
+      }
+    }
+  }
+
+  return { checked: pending.length, resolved };
+}
+
+function calculateAccuracy(records) {
+  const wins = records.filter(r => r.status === "RESOLVED" && r.outcome === "WIN").length;
+  const losses = records.filter(r => r.status === "RESOLVED" && r.outcome === "LOSS").length;
+  const pending = records.filter(r => r.status === "PENDING").length;
+  const resolved = wins + losses;
+
+  return {
+    total: records.length,
+    wins,
+    losses,
+    pending,
+    resolved,
+    winRate: resolved ? Number((wins / resolved * 100).toFixed(1)) : null
+  };
+}
+
+async function getAccuracyReport(env) {
+  const records = await listAccuracyRecords(env);
+  return { ...calculateAccuracy(records), records: records.slice(0, 30) };
+}
+
+function formatAccuracyReport(report) {
+  const rate = report.winRate === null ? "N/A" : `${report.winRate}%`;
+  return `
+📊 SIR BOT AI — SIGNAL PERFORMANCE
+━━━━━━━━━━━━━━━━━━
+Tracked signals: ${report.total}
+✅ TP1 wins: ${report.wins}
+❌ Stop-loss losses: ${report.losses}
+⏳ Still pending: ${report.pending}
+Resolved signals: ${report.resolved}
+🎯 TP1 hit rate: ${rate}
+━━━━━━━━━━━━━━━━━━
+Method: first TP1 or SL touched on later M5 candles.
+If both are touched in one candle, it is counted as an SL.
+This is historical signal tracking, not guaranteed future performance.
+MT5 execution: DISABLED
+`.trim();
+}
+
+// -------------------------
 // MARKET WORKFLOW
 // -------------------------
 
@@ -476,7 +623,8 @@ async function runAnalysis(env, notify = false) {
       latestPrice, alertsAllowed: false
     };
   }
-    const market = await collectMarket(env);
+
+  const market = await collectMarket(env);
   const m5Candle = market.M5.candles.at(-1);
 
   if (Math.abs(m5Candle.timestamp - latestPrice.timestamp) > 10 * 60 * 1000) {
@@ -542,6 +690,7 @@ Available commands:
 /help - Show commands
 /status - Check system status
 /signal - Request fresh XAUUSD analysis
+/performance - View tracked signal results
 ━━━━━━━━━━━━━━━━━━
 Market: XAUUSD
 Analysis: M5 / M15 / H1
@@ -563,6 +712,8 @@ Show this command guide.
 Check backend and market data.
 /signal
 Request a new XAUUSD analysis.
+/performance
+Show tracked BUY/SELL results and TP1 hit rate.
 Signals are analysis only.
 No trades are executed automatically.
 SIR BOT AI
@@ -633,6 +784,12 @@ MT5 execution: DISABLED
     return;
   }
 
+  if (command === "/performance") {
+    const report = await getAccuracyReport(env);
+    await sendTelegramToChat(env, chatId, formatAccuracyReport(report));
+    return;
+  }
+
   await sendTelegramToChat(env, chatId, "Unknown command. Send /help to see available commands.");
 }
 
@@ -700,6 +857,7 @@ function kampalaTime() {
     timeStyle: "medium"
   });
 }
+
 function formatScheduledReport(result) {
   const checkedAt = kampalaTime();
 
@@ -724,7 +882,6 @@ SIR BOT AI
   const signal = result.signal;
   const analysis = result.analysis;
   const market = result.market || {};
-
   const trendLine = [
     `M5: ${market.M5?.trend || "N/A"}`,
     `M15: ${market.M15?.trend || "N/A"}`,
@@ -768,33 +925,49 @@ SIR BOT AI
 
 async function scheduledAnalysis(env) {
   try {
-    const result = await runAnalysis(env, false);
-    const message = formatScheduledReport(result);
+    // Do not use runAnalysis(env, true) here: that sends only BUY/SELL.
+    // This scheduled path sends a Telegram report for BUY, SELL, and WAIT.
+    const tracking = await monitorPendingSignals(env);
+    for (const resolved of tracking.resolved) {
+      await sendTelegram(env, `
+📊 SIR BOT AI — SIGNAL RESULT
+${resolved.decision} ${resolved.symbol}
+Outcome: ${resolved.outcome}
+Entry: ${resolved.entry}
+Exit: ${resolved.exitPrice}
+${resolved.resolutionReason}
+Entry candle: ${resolved.candleTime}
+Resolved candle: ${resolved.resolutionCandle}
+MT5 execution: DISABLED
+`.trim());
+    }
 
+    const result = await runAnalysis(env, false);
+    if (result.success && result.signal && ["BUY", "SELL"].includes(result.signal.decision)) {
+      await recordSignalForTracking(env, result.signal);
+    }
+    const message = formatScheduledReport(result);
     await sendTelegram(env, message);
 
     console.log("SIR BOT scheduled Telegram report sent:", JSON.stringify({
       success: result.success,
       decision: result.signal?.decision ?? result.decision,
-      checkedAt: new Date().toISOString()
+      trackedSignalsChecked: tracking.checked,
+      trackedSignalsResolved: tracking.resolved.length,
+      checkedAt: result.checkedAt ?? new Date().toISOString()
     }));
-
   } catch (error) {
     console.error("SIR BOT scheduled analysis failed:", error.message);
-
     try {
       await sendTelegram(env, `
 ⚠️ SIR BOT AI — SYSTEM ALERT
 The automatic 5-minute analysis could not be completed.
-
 Reason: ${error.message}
-
 No trade signal issued.
 MT5 EXECUTION: DISABLED
 🕒 Kampala time: ${kampalaTime()}
 SIR BOT AI
 `.trim());
-
     } catch (telegramError) {
       console.error("Could not send scheduled error report:", telegramError.message);
     }
@@ -814,19 +987,13 @@ export default {
 
     try {
       if (path === "/telegram-webhook") {
-        if (request.method !== "POST") {
-          return response({ error: "POST method required." }, 405);
-        }
+        if (request.method !== "POST") return response({ error: "POST method required." }, 405);
         return await telegramWebhook(request, env);
       }
 
       if (path === "/telegram-set-webhook") {
-        if (request.method !== "POST") {
-          return response({ error: "POST method required." }, 405);
-        }
-        if (!authorized(request, env)) {
-          return response({ error: "Unauthorized." }, 401);
-        }
+        if (request.method !== "POST") return response({ error: "POST method required." }, 405);
+        if (!authorized(request, env)) return response({ error: "Unauthorized." }, 401);
         return response(await registerTelegramWebhook(env));
       }
 
@@ -848,119 +1015,64 @@ export default {
 
       if (path === "/market-price") {
         const latest = await getLatestPrice(env, "M5");
-        return response({
-          success: true,
-          ...latest,
-          checkedAt: new Date().toISOString()
-        });
+        return response({ success: true, ...latest, checkedAt: new Date().toISOString() });
       }
 
       if (path === "/market-check") {
         const latest = await getLatestPrice(env, "M5");
         const candles = await getCandles(env, "M5");
-
         return response({
-          success: true,
-          symbol: SYMBOL,
-          latestPrice: latest,
-          candlesReceived: candles.length,
-          lastCandle: candles.at(-1).time,
+          success: true, symbol: SYMBOL, latestPrice: latest,
+          candlesReceived: candles.length, lastCandle: candles.at(-1).time,
           alertsAllowed: latest.fresh
         });
       }
 
       if (path === "/indicators") {
         const timeframe = url.searchParams.get("timeframe") || "M5";
-
-        if (!TIMEFRAMES.includes(timeframe)) {
-          return response({ error: "Use M5, M15, or H1." }, 400);
-        }
-
+        if (!TIMEFRAMES.includes(timeframe)) return response({ error: "Use M5, M15, or H1." }, 400);
         const candles = await getCandles(env, timeframe);
-
-        return response({
-          success: true,
-          timeframe,
-          indicators: indicators(candles)
-        });
+        return response({ success: true, timeframe, indicators: indicators(candles) });
       }
 
       if (path === "/market-candles") {
         const timeframe = url.searchParams.get("timeframe") || "M5";
-
-        if (!TIMEFRAMES.includes(timeframe)) {
-          return response({ error: "Use M5, M15, or H1." }, 400);
-        }
-
+        if (!TIMEFRAMES.includes(timeframe)) return response({ error: "Use M5, M15, or H1." }, 400);
         const candles = await getCandles(env, timeframe);
-
-        return response({
-          success: true,
-          symbol: SYMBOL,
-          timeframe,
-          candles
-        });
+        return response({ success: true, symbol: SYMBOL, timeframe, candles });
       }
 
-      if (path === "/analyze-live") {
-        return response(await runAnalysis(env, false));
+      if (path === "/performance") {
+        const report = await getAccuracyReport(env);
+        return response({ success: true, ...report });
       }
+
+      if (path === "/analyze-live") return response(await runAnalysis(env, false));
 
       if (path === "/analyze-and-notify") {
-        if (request.method !== "POST") {
-          return response({ error: "POST method required." }, 405);
-        }
-
-        if (!authorized(request, env)) {
-          return response({ error: "Unauthorized." }, 401);
-        }
-
+        if (request.method !== "POST") return response({ error: "POST method required." }, 405);
+        if (!authorized(request, env)) return response({ error: "Unauthorized." }, 401);
         return response(await runAnalysis(env, true));
       }
 
       if (path === "/telegram-test") {
-        if (request.method !== "POST") {
-          return response({ error: "POST method required." }, 405);
-        }
-
-        if (!authorized(request, env)) {
-          return response({ error: "Unauthorized." }, 401);
-        }
-
-        await sendTelegram(
-          env,
-          "✅ SIR BOT AI Telegram connection test successful."
-        );
-
-        return response({
-          success: true,
-          message: "Telegram test message sent."
-        });
+        if (request.method !== "POST") return response({ error: "POST method required." }, 405);
+        if (!authorized(request, env)) return response({ error: "Unauthorized." }, 401);
+        await sendTelegram(env, "✅ SIR BOT AI Telegram connection test successful.");
+        return response({ success: true, message: "Telegram test message sent." });
       }
 
       return response({
         error: "Route not found.",
         routes: [
-          "/health",
-          "/market-price",
-          "/market-check",
-          "/indicators",
-          "/market-candles",
-          "/analyze-live",
-          "/analyze-and-notify",
-          "/telegram-test",
-          "/telegram-webhook",
-          "/telegram-set-webhook"
+          "/health", "/market-price", "/market-check", "/indicators",
+          "/market-candles", "/performance", "/analyze-live", "/analyze-and-notify",
+          "/telegram-test", "/telegram-webhook", "/telegram-set-webhook"
         ]
       }, 404);
-
     } catch (error) {
       console.error("Worker error:", error);
-
-      return response({
-        success: false,
-        error: error.message
-      }, 500);
+      return response({ success: false, error: error.message }, 500);
     }
   },
 
@@ -968,4 +1080,3 @@ export default {
     ctx.waitUntil(scheduledAnalysis(env));
   }
 };
-  
