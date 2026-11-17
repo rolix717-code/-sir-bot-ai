@@ -10,6 +10,8 @@ const SIGNAL_TTL = 86400;
 const MAX_M5_AGE_MS = 20 * 60 * 1000;
 const ACCURACY_PREFIX = "accuracy:signal:";
 const ACCURACY_TTL = 30 * 24 * 60 * 60;
+const MAX_SIGNAL_AGE_MS = 24 * 60 * 60 * 1000;
+const VALIDATION_VERSION = "live-forward-test-v1";
 
 function response(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -548,6 +550,11 @@ async function recordSignalForTracking(env, signal) {
     entryTimestamp: Date.parse(signal.candleTime),
     status: "PENDING",
     outcome: null,
+    validationVersion: VALIDATION_VERSION,
+    validationMethod: "Subsequent M5 candle OHLC; spread and slippage excluded",
+    highestPriceAfterEntry: signal.entry,
+    lowestPriceAfterEntry: signal.entry,
+    candlesChecked: 0,
     createdAt: new Date().toISOString()
   };
 
@@ -583,13 +590,14 @@ async function listAccuracyRecords(env) {
 
 async function monitorPendingSignals(env) {
   if (!env.SIGNAL_DEDUPE) throw new Error("SIGNAL_DEDUPE KV binding is missing.");
-
   const records = await listAccuracyRecords(env);
   const pending = records.filter(r => r.status === "PENDING" && Number.isFinite(r.entryTimestamp));
-  if (!pending.length) return { checked: 0, resolved: [] };
+  if (!pending.length) return { checked: 0, resolved: [], expired: [] };
 
   const candles = await getCandles(env, "M5");
   const resolved = [];
+  const expired = [];
+  const now = Date.now();
 
   for (const record of pending) {
     const laterCandles = candles.filter(c => c.timestamp > record.entryTimestamp);
@@ -597,13 +605,14 @@ async function monitorPendingSignals(env) {
 
     for (const candle of laterCandles) {
       const isBuy = record.decision === "BUY";
+      record.candlesChecked = (record.candlesChecked || 0) + 1;
+      record.highestPriceAfterEntry = Math.max(record.highestPriceAfterEntry ?? record.entry, candle.high);
+      record.lowestPriceAfterEntry = Math.min(record.lowestPriceAfterEntry ?? record.entry, candle.low);
       const stopHit = isBuy ? candle.low <= record.stopLoss : candle.high >= record.stopLoss;
       const targetHit = isBuy ? candle.high >= record.takeProfit : candle.low <= record.takeProfit;
 
       if (stopHit && targetHit) {
-        // If both levels occur inside one M5 candle, their order is unknowable.
-        // Count it conservatively as a loss rather than assuming TP was first.
-        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "SL and TP1 touched in the same candle; counted conservatively as SL." };
+        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "SL and TP1 touched in the same M5 candle; conservatively counted as SL." };
       } else if (stopHit) {
         result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "Stop loss reached." };
       } else if (targetHit) {
@@ -617,37 +626,83 @@ async function monitorPendingSignals(env) {
         record.resolutionReason = result.reason;
         record.resolutionCandle = candle.time;
         record.resolvedAt = new Date().toISOString();
-
+        record.validationData = "M5 OHLC; intrabar sequence unknown; spread/slippage not included";
         const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
         await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
         resolved.push(record);
         break;
       }
     }
-  }
 
-  return { checked: pending.length, resolved };
+    if (!result && now - record.entryTimestamp > MAX_SIGNAL_AGE_MS) {
+      record.status = "EXPIRED";
+      record.outcome = "EXPIRED";
+      record.resolutionReason = "Neither TP1 nor SL was observed within the 24-hour validation window.";
+      record.resolvedAt = new Date().toISOString();
+      const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
+      await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
+      expired.push(record);
+    } else if (!result) {
+      const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
+      await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
+    }
+  }
+  return { checked: pending.length, resolved, expired };
 }
 
 function calculateAccuracy(records) {
   const wins = records.filter(r => r.status === "RESOLVED" && r.outcome === "WIN").length;
   const losses = records.filter(r => r.status === "RESOLVED" && r.outcome === "LOSS").length;
   const pending = records.filter(r => r.status === "PENDING").length;
+  const expired = records.filter(r => r.status === "EXPIRED").length;
   const resolved = wins + losses;
-
   return {
-    total: records.length,
-    wins,
-    losses,
-    pending,
-    resolved,
-    winRate: resolved ? Number((wins / resolved * 100).toFixed(1)) : null
+    total: records.length, wins, losses, pending, expired, resolved,
+    winRate: resolved ? Number((wins / resolved * 100).toFixed(1)) : null,
+    sampleSizeNote: resolved < 100
+      ? "Early sample: collect at least 100 resolved signals before drawing conclusions."
+      : "100+ resolved signals available; continue monitoring across market conditions."
   };
 }
 
 async function getAccuracyReport(env) {
   const records = await listAccuracyRecords(env);
   return { ...calculateAccuracy(records), records: records.slice(0, 30) };
+}
+
+async function getLiveValidation(env) {
+  const [latestPrice, report] = await Promise.all([
+    getLatestPrice(env, "M5"),
+    getAccuracyReport(env)
+  ]);
+  return {
+    success: true,
+    engine: "SIR BOT AI Live Validation",
+    version: VALIDATION_VERSION,
+    market: SYMBOL,
+    dataFresh: latestPrice.fresh,
+    latestPrice: latestPrice.price,
+    candleTime: latestPrice.candleTime,
+    candleAgeMinutes: latestPrice.ageMinutes,
+    validation: {
+      totalTracked: report.total,
+      wins: report.wins,
+      losses: report.losses,
+      pending: report.pending,
+      expired: report.expired,
+      resolved: report.resolved,
+      winRate: report.winRate,
+      requiredResolvedSample: 100,
+      sampleSizeNote: report.sampleSizeNote,
+      limitations: [
+        "Uses subsequent M5 candle OHLC, not broker execution receipts.",
+        "Spread, commission and slippage are not included.",
+        "If TP1 and SL occur in the same candle, the result is conservatively a loss.",
+        "Signals are analysis-only; MT5 execution is disabled."
+      ]
+    },
+    checkedAt: new Date().toISOString()
+  };
 }
 
 function formatAccuracyReport(report) {
@@ -663,8 +718,9 @@ Resolved signals: ${report.resolved}
 🎯 TP1 hit rate: ${rate}
 ━━━━━━━━━━━━━━━━━━
 Method: first TP1 or SL touched on later M5 candles.
-If both are touched in one candle, it is counted as an SL.
-This is historical signal tracking, not guaranteed future performance.
+Same-candle TP/SL = SL. Expired signals are excluded from win rate.
+Spread, slippage and broker execution costs are NOT included.
+This is a forward-test record, not a profitability guarantee.
 MT5 execution: DISABLED
 `.trim();
 }
@@ -757,6 +813,9 @@ async function runAnalysis(env, notify = false) {
   }
 
   let telegram = { sent: false, duplicate: false };
+  if (signal.decision === "BUY" || signal.decision === "SELL") {
+    await recordSignalForTracking(env, signal);
+  }
   if (notify && signal.decision !== "WAIT") telegram = await sendUniqueSignal(env, signal);
 
   return {
@@ -803,7 +862,7 @@ Available commands:
 /help - Show commands
 /status - Check system status
 /signal - Request fresh XAUUSD analysis
-/performance - View tracked signal results
+/performance - View tracked signal results\n/validation - Check live data freshness and forward-test status
 ━━━━━━━━━━━━━━━━━━
 Market: XAUUSD
 Analysis: M5 / M15 / H1
@@ -900,6 +959,31 @@ MT5 execution: DISABLED
   if (command === "/performance") {
     const report = await getAccuracyReport(env);
     await sendTelegramToChat(env, chatId, formatAccuracyReport(report));
+    return;
+  }
+
+  if (command === "/validation") {
+    const status = await getLiveValidation(env);
+    const v = status.validation;
+    await sendTelegramToChat(env, chatId, `
+🧪 SIR BOT AI — LIVE VALIDATION
+Market data: ${status.dataFresh ? "FRESH" : "STALE"}
+XAUUSD: ${status.latestPrice}
+M5 candle age: ${status.candleAgeMinutes} min
+━━━━━━━━━━━━━━━━━━
+Tracked: ${v.totalTracked}
+Wins: ${v.wins}
+Losses: ${v.losses}
+Pending: ${v.pending}
+Expired: ${v.expired}
+Resolved: ${v.resolved}
+TP1 hit rate: ${v.winRate === null ? "N/A" : `${v.winRate}%`}
+${v.sampleSizeNote}
+━━━━━━━━━━━━━━━━━━
+Spread/slippage: NOT INCLUDED
+Broker execution: NOT VERIFIED
+MT5 execution: DISABLED
+`.trim());
     return;
   }
 
@@ -1056,11 +1140,16 @@ Resolved candle: ${resolved.resolutionCandle}
 MT5 execution: DISABLED
 `.trim());
     }
+    for (const expired of tracking.expired) {
+      await sendTelegram(env, `⌛ SIR BOT AI — SIGNAL EXPIRED
+${expired.decision} ${expired.symbol}
+Entry: ${expired.entry}
+No TP1 or SL was observed within the 24-hour validation window.
+Excluded from win-rate calculations.
+MT5 execution: DISABLED`.trim());
+    }
 
     const result = await runAnalysis(env, false);
-    if (result.success && result.signal && ["BUY", "SELL"].includes(result.signal.decision)) {
-      await recordSignalForTracking(env, result.signal);
-    }
     const message = formatScheduledReport(result);
     await sendTelegram(env, message);
 
@@ -1162,6 +1251,10 @@ export default {
         return response({ success: true, ...report });
       }
 
+      if (path === "/validation") {
+        return response(await getLiveValidation(env));
+      }
+
       if (path === "/analyze-live") return response(await runAnalysis(env, false));
 
       if (path === "/analyze-and-notify") {
@@ -1181,7 +1274,7 @@ export default {
         error: "Route not found.",
         routes: [
           "/health", "/market-price", "/market-check", "/indicators",
-          "/market-candles", "/performance", "/analyze-live", "/analyze-and-notify",
+          "/market-candles", "/performance", "/validation", "/analyze-live", "/analyze-and-notify",
           "/telegram-test", "/telegram-webhook", "/telegram-set-webhook"
         ]
       }, 404);
