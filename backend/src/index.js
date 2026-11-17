@@ -1,4 +1,4 @@
-const ALLOWED_ORIGIN = "https://rolix717-code.github.io";
+const ALLOWED_ORIGIN = "https://sirbotai.com.de";
 const MARKET_BASE = "https://api.realmarketapi.com";
 const TCHAVI_URL = "https://tchavi.com/api/v1/chat/completions";
 
