@@ -51,7 +51,7 @@ document.addEventListener("DOMContentLoaded", () => {
  }
  // Navigation
  const pages=document.querySelectorAll(".page"),navItems=document.querySelectorAll(".nav-item"),sidebar=$("sidebar");
- const titles={overview:"Overview",market:"Live Market",intelligence:"AI Intelligence",indicators:"Technical Indicators",risk:"Risk Center",account:"Trading Account",admin:"Admin Users"};
+ const titles={overview:"Overview",market:"Live Market",intelligence:"AI Intelligence",vision:"AI Vision Scanner",indicators:"Technical Indicators",risk:"Risk Center",account:"Trading Account",admin:"Admin Users"};
  function openPage(name){
    if(name==="admin"&&signedUser?.role!=="admin")return;
    pages.forEach(p=>p.classList.toggle("active",p.id===`page-${name}`));
@@ -101,6 +101,61 @@ document.addEventListener("DOMContentLoaded", () => {
  }
  $("refreshMarket").addEventListener("click",loadMarket);$("refreshIndicators").addEventListener("click",loadIndicators);$("analyzeButton").addEventListener("click",analyzeMarket);
  $("riskPct").addEventListener("input",e=>$("riskValue").textContent=e.target.value+"%");
+
+ // AI Vision Scanner: screenshot-only analysis; no live execution.
+ const visionFile=$("visionFile"), visionPreview=$("visionPreview"), visionAnalyze=$("visionAnalyze");
+ let visionObjectUrl="";
+ visionFile.addEventListener("change",()=>{
+   const file=visionFile.files?.[0];
+   $("visionResult").classList.add("hidden");
+   if(visionObjectUrl)URL.revokeObjectURL(visionObjectUrl);
+   visionObjectUrl="";
+   if(!file){visionPreview.classList.add("hidden");visionAnalyze.disabled=true;return;}
+   if(!["image/png","image/jpeg","image/webp"].includes(file.type)||file.size>5*1024*1024){
+     message("visionMessage","Choose a PNG, JPG or WEBP image no larger than 5 MB.");
+     visionFile.value="";visionPreview.classList.add("hidden");visionAnalyze.disabled=true;return;
+   }
+   visionObjectUrl=URL.createObjectURL(file);visionPreview.src=visionObjectUrl;
+   visionPreview.classList.remove("hidden");visionAnalyze.disabled=false;
+   message("visionMessage",`Selected: ${file.name}. Ready to analyze.`);
+ });
+ $("visionClear").addEventListener("click",()=>{
+   visionFile.value="";if(visionObjectUrl)URL.revokeObjectURL(visionObjectUrl);
+   visionObjectUrl="";visionPreview.removeAttribute("src");visionPreview.classList.add("hidden");
+   visionAnalyze.disabled=true;$("visionResult").classList.add("hidden");
+   message("visionMessage","Choose a chart screenshot to begin.");
+ });
+ visionAnalyze.addEventListener("click",async()=>{
+   const file=visionFile.files?.[0];if(!file)return;
+   visionAnalyze.disabled=true;visionAnalyze.textContent="ANALYZING IMAGE...";
+   message("visionMessage","Uploading screenshot securely for AI visual analysis...");
+   $("visionResult").classList.add("hidden");
+   try{
+     const form=new FormData();form.append("chart",file);form.append("timeframe",$("visionTimeframe").value);
+     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);
+     let res;
+     try{res=await fetch(API_BASE+"/analyze-image",{method:"POST",headers:authToken?{Authorization:`Bearer ${authToken}`}:{},body:form,signal:controller.signal,cache:"no-store"});}
+     finally{clearTimeout(timer);}
+     const data=await res.json().catch(()=>({error:"Invalid server response"}));
+     if(!res.ok)throw new Error(data.error||`HTTP ${res.status}`);
+     const a=data.analysis||{};
+     $("visionDecision").textContent=a.decision||"WAIT";
+     $("visionDecision").className="decision-display "+String(a.decision||"wait").toLowerCase();
+     $("visionTrend").textContent=a.trend||"—";$("visionConfidence").textContent=`${a.confidence??"—"}%`;
+     $("visionStructure").textContent=a.market_structure||"—";
+     const displayPrice=v=>v===null||v===undefined||v===""?"Not readable":Number.isFinite(Number(v))?Number(v).toFixed(3):"Not readable";
+     $("visionEntry").textContent=displayPrice(a.entry);$("visionSL").textContent=displayPrice(a.stop_loss);
+     $("visionTP1").textContent=displayPrice(a.take_profit_1);$("visionTP2").textContent=displayPrice(a.take_profit_2);
+     $("visionTP3").textContent=displayPrice(a.take_profit_3);$("visionSupport").textContent=displayPrice(a.support);
+     $("visionResistance").textContent=displayPrice(a.resistance);
+     $("visionReasoning").textContent=a.reasoning||"No reasoning provided.";
+     $("visionWarning").textContent=a.risk_warning||"Screenshot-only analysis. Verify all levels against live market data.";
+     $("visionResult").classList.remove("hidden");
+     message("visionMessage","Analysis complete. This result is based only on the uploaded screenshot.");
+   }catch(err){message("visionMessage","Analysis failed: "+(err.name==="AbortError"?"Request timed out. Try a smaller image.":err.message));}
+   finally{visionAnalyze.disabled=!visionFile.files?.[0];visionAnalyze.textContent="✦ ANALYZE CHART IMAGE";}
+ });
+
  async function loadUsers(){
    $("usersTable").innerHTML='<tr><td colspan="5">Loading users...</td></tr>';
    try{const d=await request("/admin/users");$("usersTable").innerHTML="";

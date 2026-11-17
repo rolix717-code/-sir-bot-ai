@@ -4,7 +4,7 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#080a0f">
 <title>SIR BOT AI | Professional Trading Terminal</title>
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 <section id="authScreen" class="auth-screen">
@@ -38,6 +38,7 @@
     <button class="nav-item active" data-page="overview"><span>◈</span> Overview</button>
     <button class="nav-item" data-page="market"><span>◉</span> Live Market</button>
     <button class="nav-item" data-page="intelligence"><span>✦</span> AI Intelligence</button>
+     <button class="nav-item" data-page="vision"><span>▧</span> AI Vision Scanner</button>
     <button class="nav-item" data-page="indicators"><span>⌁</span> Indicators</button>
     <button class="nav-item" data-page="risk"><span>◇</span> Risk Center</button>
     <button class="nav-item" data-page="account"><span>▣</span> Account</button>
@@ -65,6 +66,32 @@
 
 <section class="page" id="page-intelligence"><div class="page-heading"><span class="eyebrow">AI POWERED ANALYSIS</span><h1>AI Intelligence</h1><p>Analysis of XAUUSD market conditions.</p></div><article class="card ai-card"><div class="card-heading"><h3>AI Market Decision</h3><span class="ai-symbol">✦</span></div><p class="muted" id="aiStatus">Ready for analysis.</p><div class="decision-display" id="aiDecision">WAITING</div><div class="three-stats"><div><small>TREND</small><b id="aiTrend">—</b></div><div><small>CONFIDENCE</small><b id="aiConfidence">—</b></div><div><small>CANDLES</small><b id="aiCandles">—</b></div></div><div class="divider"></div><h3>AI Reasoning</h3><p class="muted" id="aiReasoning">Run an analysis to receive market insights.</p><p class="tiny" id="aiWarning">AI analysis is not a guaranteed trading signal.</p><p class="tiny" id="aiTimestamp">No analysis performed.</p><button class="gold-button" id="analyzeButton">✦ ANALYZE XAUUSD</button></article></section>
 
+
+<section class="page" id="page-vision">
+ <div class="page-heading"><span class="eyebrow">IMAGE-BASED MARKET REVIEW</span><h1>AI Vision Scanner</h1><p>Upload an XAUUSD chart screenshot from MT5 or TradingView for visual analysis.</p></div>
+ <article class="card vision-card">
+  <div class="card-heading"><div><span class="eyebrow">CHART UPLOAD</span><h3>Choose your chart screenshot</h3></div><span class="status-pill">IMAGE ANALYSIS</span></div>
+  <label class="vision-label" for="visionTimeframe">Chart timeframe</label>
+  <select id="visionTimeframe" class="vision-select"><option>M5</option><option>M15</option><option>H1</option><option>H4</option><option>M1</option><option>D1</option></select>
+  <label class="upload-zone" for="visionFile"><span class="upload-icon">＋</span><b>Tap to upload chart image</b><small>PNG, JPG or WEBP · Maximum 5 MB</small><input id="visionFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+  <img id="visionPreview" class="vision-preview hidden" alt="Selected chart screenshot">
+  <div class="vision-actions"><button class="gold-button" id="visionAnalyze" disabled>✦ ANALYZE CHART IMAGE</button><button class="outline-button" id="visionClear" type="button">CLEAR</button></div>
+  <p id="visionMessage" class="muted">This tool analyzes the uploaded screenshot only. It does not read live prices or execute trades.</p>
+ </article>
+ <article class="card hidden" id="visionResult">
+  <div class="card-heading"><div><span class="eyebrow">VISUAL AI RESULT</span><h3>Chart assessment</h3></div><span class="status-pill">SCREENSHOT ONLY</span></div>
+  <div id="visionDecision" class="decision-display">WAIT</div>
+  <div class="three-stats"><div><small>TREND</small><b id="visionTrend">—</b></div><div><small>CONFIDENCE</small><b id="visionConfidence">—</b></div><div><small>STRUCTURE</small><b id="visionStructure">—</b></div></div>
+  <div class="vision-levels">
+   <div><small>ENTRY</small><b id="visionEntry">—</b></div><div><small>STOP LOSS</small><b id="visionSL">—</b></div>
+   <div><small>TAKE PROFIT 1</small><b id="visionTP1">—</b></div><div><small>TAKE PROFIT 2</small><b id="visionTP2">—</b></div>
+   <div><small>TAKE PROFIT 3</small><b id="visionTP3">—</b></div><div><small>SUPPORT</small><b id="visionSupport">—</b></div>
+   <div><small>RESISTANCE</small><b id="visionResistance">—</b></div>
+  </div>
+  <h3>AI reasoning</h3><p class="muted" id="visionReasoning">—</p><p class="tiny" id="visionWarning">Screenshot-only analysis. Verify all levels against live market data.</p>
+ </article>
+</section>
+
 <section class="page" id="page-indicators"><div class="page-heading"><span class="eyebrow">TECHNICAL ANALYSIS</span><h1>Indicators</h1><p>Technical calculations from market candles.</p></div><div class="indicator-grid">
 <article class="metric-card"><span>EMA 20</span><h2 id="ema20">—</h2><small>Short-term average</small></article><article class="metric-card"><span>EMA 50</span><h2 id="ema50">—</h2><small>Longer-term average</small></article><article class="metric-card"><span>RSI 14</span><h2 id="rsi14">—</h2><small id="rsiCondition">Waiting for data</small></article><article class="metric-card"><span>MACD</span><h2 id="macd">—</h2><small id="macdCondition">Waiting for data</small></article><article class="metric-card"><span>ATR 14</span><h2 id="atr14">—</h2><small>Volatility measurement</small></article><article class="metric-card"><span>MARKET STRUCTURE</span><h2 class="small-value" id="structure">—</h2><small>Recent price structure</small></article></div><article class="card"><div class="card-heading"><h3>Technical Trend</h3><span class="status-pill" id="indicatorTrend">WAITING</span></div><p class="muted" id="indicatorMessage">Waiting for technical calculations.</p><button class="gold-button" id="refreshIndicators">Refresh Indicators</button></article></section>
 
@@ -76,5 +103,5 @@
 
 <footer><b>SIR BOT AI</b><span>GOLD EDITION © 2026</span><small>Analysis only. Trading execution disabled.</small><div class="footer-links"><a href="https://t.me/SirBotAI_Signals_Bot" target="_blank" rel="noopener">Telegram</a><a href="https://wa.me/256758760840" target="_blank" rel="noopener">WhatsApp Customer Care</a></div></footer>
 </main></div>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body></html>
