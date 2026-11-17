@@ -1,4 +1,4 @@
-const API_BASE = "https://sir-bot-ai-backend.sirbotai.workers.dev";
+const API_BASE = "https://sir-bot-ai-backend.rolix717.workers.dev";
 const TELEGRAM_URL = "https://t.me/SirBotAI_Signals_Bot";
 let authToken = sessionStorage.getItem("sirbot_token") || "";
 let signedUser = null;
