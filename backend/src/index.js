@@ -1,4 +1,4 @@
-const ALLOWED_ORIGIN = "https://sirbotai.com.de";
+const ALLOWED_ORIGIN = "*";
 const MARKET_BASE = "https://api.realmarketapi.com";
 const TCHAVI_URL = "https://tchavi.com/api/v1/chat/completions";
 
@@ -399,6 +399,107 @@ Confidence is not a guaranteed win probability.
   const data = await res.json();
   if (!res.ok) throw new Error(`AI error ${res.status}: ${data.error?.message ?? "Request failed"}`);
   return validateAI(parseAI(data.choices?.[0]?.message?.content));
+}
+
+// -------------------------
+// AI VISION SCANNER (uploaded chart screenshots only)
+// -------------------------
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function analyzeChartImage(request, env) {
+  if (!env.TCHAVI_API_KEY) return response({ error: "AI provider is not configured." }, 503);
+  const contentLength = Number(request.headers.get("Content-Length") || 0);
+  if (contentLength > 5 * 1024 * 1024 + 100 * 1024) {
+    return response({ error: "Image is too large. Maximum image size is 5 MB." }, 413);
+  }
+
+  const form = await request.formData();
+  const file = form.get("chart");
+  const timeframe = String(form.get("timeframe") || "M5").toUpperCase();
+  if (!file || typeof file.arrayBuffer !== "function") {
+    return response({ error: "Please upload a chart image." }, 400);
+  }
+  if (!["M1", "M5", "M15", "H1", "H4", "D1"].includes(timeframe)) {
+    return response({ error: "Unsupported timeframe. Choose M1, M5, M15, H1, H4 or D1." }, 400);
+  }
+  const allowedTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+  if (!allowedTypes.has(file.type)) return response({ error: "Only PNG, JPG and WEBP images are supported." }, 415);
+  if (file.size < 100 || file.size > 5 * 1024 * 1024) {
+    return response({ error: "Image must be between 100 bytes and 5 MB." }, 413);
+  }
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const imageData = `data:${file.type};base64,${bytesToBase64(bytes)}`;
+  const system = `You are SIR BOT AI Vision, a cautious technical chart reviewer. Analyze ONLY what is visibly readable in the uploaded XAUUSD chart screenshot. The selected timeframe is ${timeframe}. Do not claim access to live market data, broker prices, candles, or indicators. Do not invent exact prices or levels: if axis labels or price levels cannot be read confidently, return null for those fields. If the screenshot is unclear, cropped, not a chart, or insufficient to justify a directional setup, choose WAIT. Never imply certainty or guaranteed profit. Return ONLY valid JSON with this exact shape: {"decision":"WAIT","trend":"SIDEWAYS","confidence":0,"market_structure":"UNCLEAR","entry":null,"stop_loss":null,"take_profit_1":null,"take_profit_2":null,"take_profit_3":null,"support":null,"resistance":null,"reasoning":"...","risk_warning":"Screenshot-only analysis; verify all prices on a live chart."}. decision must be BUY, SELL, or WAIT. trend must be BULLISH, BEARISH, or SIDEWAYS. confidence must be an integer 0-100 and represents visual assessment confidence, NOT probability of winning. Price fields must be numbers or null. For BUY/SELL, only provide levels when readable and internally sensible; otherwise choose WAIT. Use price levels in the chart's displayed quote precision.`;
+
+  const aiResponse = await fetch(TCHAVI_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.TCHAVI_API_KEY}` },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      temperature: 0.1,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: [
+          { type: "text", text: `Review this XAUUSD chart screenshot on ${timeframe}. Return the requested JSON only.` },
+          { type: "image_url", image_url: { url: imageData, detail: "high" } }
+        ] }
+      ]
+    }),
+    signal: AbortSignal.timeout(45000)
+  });
+  const payload = await aiResponse.json().catch(() => ({}));
+  if (!aiResponse.ok) {
+    console.error("Vision AI provider error", aiResponse.status, payload?.error?.message || "Unknown error");
+    return response({ error: `AI image analysis failed (${aiResponse.status}). Check that your AI provider supports image input.` }, 502);
+  }
+  const raw = payload.choices?.[0]?.message?.content;
+  const text = typeof raw === "string" ? raw : Array.isArray(raw) ? raw.map(x => x.text || "").join("\n") : "";
+  let analysis;
+  try {
+    const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start < 0 || end <= start) throw new Error("No JSON object in AI response.");
+    analysis = JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    return response({ error: "The AI provider returned an unreadable analysis. Please try a clearer chart screenshot." }, 502);
+  }
+
+  const decision = String(analysis.decision || "WAIT").toUpperCase();
+  const trend = String(analysis.trend || "SIDEWAYS").toUpperCase();
+  const confidence = Number(analysis.confidence);
+  if (!["BUY", "SELL", "WAIT"].includes(decision) || !["BULLISH", "BEARISH", "SIDEWAYS"].includes(trend) || !Number.isFinite(confidence) || confidence < 0 || confidence > 100) {
+    return response({ error: "The AI provider returned invalid analysis fields. Please retry." }, 502);
+  }
+  const priceField = value => value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
+  const safeDecision = decision === "BUY" && trend !== "BULLISH" || decision === "SELL" && trend !== "BEARISH" ? "WAIT" : decision;
+  const result = {
+    decision: safeDecision,
+    trend,
+    confidence: Math.round(confidence),
+    market_structure: String(analysis.market_structure || "UNCLEAR").slice(0, 160),
+    entry: priceField(analysis.entry),
+    stop_loss: priceField(analysis.stop_loss),
+    take_profit_1: priceField(analysis.take_profit_1),
+    take_profit_2: priceField(analysis.take_profit_2),
+    take_profit_3: priceField(analysis.take_profit_3),
+    support: priceField(analysis.support),
+    resistance: priceField(analysis.resistance),
+    reasoning: String(analysis.reasoning || "No clear visual reasoning was provided.").slice(0, 1200),
+    risk_warning: String(analysis.risk_warning || "Screenshot-only analysis. Verify all levels against live market data.").slice(0, 500)
+  };
+  if (safeDecision === "WAIT") {
+    result.entry = result.stop_loss = result.take_profit_1 = result.take_profit_2 = result.take_profit_3 = null;
+  }
+  return response({ success: true, symbol: SYMBOL, timeframe, source: "uploaded_screenshot_only", analysis: result });
 }
 
 // -------------------------
@@ -1333,7 +1434,7 @@ export default {
       }
 
       // Protect private dashboard endpoints. Public health and Telegram/cron remain available.
-      const protectedPaths = ["/market-price", "/market-check", "/indicators", "/market-candles", "/performance", "/validation", "/analyze-live"];
+      const protectedPaths = ["/market-price", "/market-check", "/indicators", "/market-candles", "/performance", "/validation", "/analyze-live", "/analyze-image"];
       if (protectedPaths.includes(path)) {
         const user = await currentUser(request, env);
         if (!user) return response({ error: "Please sign in with an active account." }, 401);
@@ -1402,6 +1503,11 @@ export default {
 
       if (path === "/analyze-live") return response(await runAnalysis(env, false));
 
+      if (path === "/analyze-image") {
+        if (request.method !== "POST") return response({ error: "POST method required." }, 405);
+        return await analyzeChartImage(request, env);
+      }
+
       if (path === "/analyze-and-notify") {
         if (request.method !== "POST") return response({ error: "POST method required." }, 405);
         if (!authorized(request, env)) return response({ error: "Unauthorized." }, 401);
@@ -1419,7 +1525,7 @@ export default {
         error: "Route not found.",
         routes: [
           "/health", "/market-price", "/market-check", "/indicators",
-          "/market-candles", "/performance", "/analyze-live", "/analyze-and-notify",
+          "/market-candles", "/performance", "/analyze-live", "/analyze-image", "/analyze-and-notify",
           "/telegram-test", "/telegram-webhook", "/telegram-set-webhook"
         ]
       }, 404);
