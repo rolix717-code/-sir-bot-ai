@@ -8,7 +8,7 @@ crons = ["*/5 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "sir-bot-users"
-database_id = "REPLACE_WITH_YOUR_EXISTING_D1_DATABASE_ID"
+database_id = "63edf7cf-a15f-4913-976c-33146fe51979"
 
 # Keep your existing KV namespace binding here.
 # [[kv_namespaces]]
