@@ -1,4 +1,4 @@
-const ALLOWED_ORIGIN = "https://sirbotai.com.de";
+const ALLOWED_ORIGIN = "https://rolix717-code.github.io";
 const MARKET_BASE = "https://api.realmarketapi.com";
 const TCHAVI_URL = "https://tchavi.com/api/v1/chat/completions";
 
@@ -470,9 +470,72 @@ async function sendTelegramToChat(env, chatId, message) {
   return data;
 }
 
+// Telegram subscribers are stored in the existing Cloudflare D1 database.
+async function ensureTelegramSubscribersTable(env) {
+  if (!env.DB) throw new Error("D1 binding DB is required for multi-user Telegram support.");
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS telegram_subscribers (
+      chat_id TEXT PRIMARY KEY,
+      first_name TEXT,
+      username TEXT,
+      chat_type TEXT NOT NULL DEFAULT 'private',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+}
+
+async function registerTelegramSubscriber(env, message) {
+  await ensureTelegramSubscribersTable(env);
+  const chatId = String(message.chat.id);
+  const firstName = String(message.from?.first_name || '').slice(0, 100);
+  const username = String(message.from?.username || '').slice(0, 100);
+  await env.DB.prepare(`
+    INSERT INTO telegram_subscribers (chat_id, first_name, username, chat_type, active, created_at, last_seen_at)
+    VALUES (?, ?, ?, 'private', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      first_name=excluded.first_name,
+      username=excluded.username,
+      active=1,
+      last_seen_at=CURRENT_TIMESTAMP
+  `).bind(chatId, firstName, username).run();
+}
+
+async function deactivateTelegramSubscriber(env, chatId) {
+  await ensureTelegramSubscribersTable(env);
+  await env.DB.prepare("UPDATE telegram_subscribers SET active=0, last_seen_at=CURRENT_TIMESTAMP WHERE chat_id=?")
+    .bind(String(chatId)).run();
+}
+
+async function getTelegramSubscriberIds(env) {
+  await ensureTelegramSubscribersTable(env);
+  const result = await env.DB.prepare("SELECT chat_id FROM telegram_subscribers WHERE active=1").all();
+  const ids = new Set((result.results || []).map(row => String(row.chat_id)));
+  // Keep the original owner/admin destination working during the migration.
+  if (env.TELEGRAM_CHAT_ID) ids.add(String(env.TELEGRAM_CHAT_ID));
+  return [...ids];
+}
+
 async function sendTelegram(env, message) {
-  if (!env.TELEGRAM_CHAT_ID) throw new Error("Telegram chat ID is missing.");
-  return sendTelegramToChat(env, env.TELEGRAM_CHAT_ID, message);
+  const chatIds = await getTelegramSubscriberIds(env);
+  if (!chatIds.length) throw new Error("No Telegram subscribers yet. Open the bot and press /start.");
+  const results = await Promise.allSettled(chatIds.map(async chatId => {
+    try {
+      await sendTelegramToChat(env, chatId, message);
+      return chatId;
+    } catch (error) {
+      // Telegram returns 403 when a user blocks the bot or their account is unavailable.
+      if (/blocked|chat not found|deactivated/i.test(error.message)) {
+        await deactivateTelegramSubscriber(env, chatId);
+      }
+      throw error;
+    }
+  }));
+  const sent = results.filter(item => item.status === "fulfilled").length;
+  const failed = results.length - sent;
+  console.log(`Telegram broadcast complete: ${sent} sent, ${failed} failed.`);
+  return { sent, failed, total: chatIds.length };
 }
 
 function formatSignal(signal) {
@@ -787,30 +850,37 @@ async function handleTelegramCommand(env, message) {
   const text = String(message.text ?? "").trim();
   if (!chatId || !text) return;
 
-  if (!env.TELEGRAM_CHAT_ID || chatId !== String(env.TELEGRAM_CHAT_ID)) {
-    console.log("Ignored Telegram message from an unapproved chat.");
-    return;
-  }
-
   const command = text.split(/\s+/)[0].split("@")[0].toLowerCase();
 
   if (command === "/start") {
+    if (message.chat?.type !== "private") {
+      await sendTelegramToChat(env, chatId, "Please open SIR BOT AI in a private chat and press /start to subscribe to signals.");
+      return;
+    }
+    await registerTelegramSubscriber(env, message);
     await sendTelegramToChat(env, chatId, `
 🟡 WELCOME TO SIR BOT AI
-Your XAUUSD analysis assistant is online.
+You are now subscribed to XAUUSD signals and automatic market reports.
 Available commands:
-/start - Start the bot
+/start - Subscribe / reactivate
+/stop - Stop receiving automatic signals
 /help - Show commands
 /status - Check system status
 /signal - Request fresh XAUUSD analysis
 /performance - View tracked signal results
 ━━━━━━━━━━━━━━━━━━
 Market: XAUUSD
-Analysis: M5 / M15 / H1
+Analysis: M5 / M15 / H1 / H4
 Automatic reports: Every 5 minutes when the scheduled trigger is active.
 MT5 execution: DISABLED
 SIR BOT AI
 `.trim());
+    return;
+  }
+
+  if (command === "/stop") {
+    await deactivateTelegramSubscriber(env, chatId);
+    await sendTelegramToChat(env, chatId, "You have been unsubscribed from automatic SIR BOT AI broadcasts. Send /start any time to subscribe again.");
     return;
   }
 
@@ -819,6 +889,8 @@ SIR BOT AI
 🟡 SIR BOT AI — COMMANDS
 /start
 Open the welcome message.
+/stop
+Stop receiving automatic signals.
 /help
 Show this command guide.
 /status
@@ -1286,7 +1358,7 @@ export default {
           market: SYMBOL,
           ai: env.TCHAVI_API_KEY ? "configured" : "missing",
           marketData: env.REALMARKETAPI_KEY ? "configured" : "missing",
-          telegram: env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID ? "configured" : "missing",
+          telegram: env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_WEBHOOK_SECRET ? "configured" : "missing",
           telegramWebhook: env.TELEGRAM_WEBHOOK_SECRET ? "configured" : "missing",
           kv: env.SIGNAL_DEDUPE ? "configured" : "missing",
           trading: "disabled",
