@@ -1,4 +1,4 @@
-const ALLOWED_ORIGIN = "https://rolix717-code.github.io";
+const ALLOWED_ORIGIN = "https://sirbotai.com.de";
 const MARKET_BASE = "https://api.realmarketapi.com";
 const TCHAVI_URL = "https://tchavi.com/api/v1/chat/completions";
 
@@ -1111,7 +1111,7 @@ async function sha256(value) {
 }
 async function passwordHash(password, salt = b64url(crypto.getRandomValues(new Uint8Array(16)))) {
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: encoder.encode(salt), iterations: 100000, hash: "SHA-256" }, key, 256);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: encoder.encode(salt), iterations: 120000, hash: "SHA-256" }, key, 256);
   return { salt, hash: b64url(new Uint8Array(bits)) };
 }
 async function verifyPassword(password, salt, expected) {
