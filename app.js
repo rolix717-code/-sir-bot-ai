@@ -66,7 +66,8 @@ document.addEventListener("DOMContentLoaded", () => {
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
    try{return await request(path,{signal:controller.signal});}finally{clearTimeout(timer);}
  }
- async function checkBackend(){try{const d=await api("/health");$("backendStatus").textContent="ONLINE";$("sidebarStatus").textContent="Backend online";$("marketConnection").textContent=d.marketData||d.market_data;$("aiConnection").textContent=d.ai;}catch(e){$("backendStatus").textContent="OFFLINE";$("sidebarStatus").textContent="Connection failed";$("marketConnection").textContent="Unavailable";$("aiConnection").textContent="Unavailable";}}
+ async function checkBackend(){try{const d=await api("/health");$("backendStatus").textContent="ONLINE";$("sidebarStatus").textContent="Backend online";$("marketConnection").textContent=d.marketData||d.market_data;$("aiConnection").textContent=d.ai;}catch(e){$("backendStatus").textContent="OFFLINE";$("sidebarStatus").textContent="Connection failed";$("marketConnection").textContent="Unavailable";$("aiConnection").textContent="Unavailable";} await checkMt5Bridge();}
+ async function checkMt5Bridge(){const label=$("mt5ExecutionStatus"),dot=$("mt5ExecutionDot");if(!label)return;try{const d=await request("/mt5/bridges");const now=Date.now();const active=(d.bridges||[]).filter(b=>b.status==="active");const live=active.filter(b=>b.last_seen&&now-Date.parse(b.last_seen)<30000);if(live.length){label.textContent=`CONNECTED · ${live.length} bridge(s) · last seen ${new Date(live[0].last_seen).toLocaleTimeString()}`;dot?.classList.remove("warning-dot");dot?.classList.add("live-dot");}else if(active.length){label.textContent="PAIRED · waiting for Windows bridge";dot?.classList.add("warning-dot");dot?.classList.remove("live-dot");}else{label.textContent="NOT PAIRED";dot?.classList.add("warning-dot");dot?.classList.remove("live-dot");}}catch(e){label.textContent="STATUS UNAVAILABLE · "+e.message;dot?.classList.add("warning-dot");dot?.classList.remove("live-dot");}}
  async function loadMarket(){
    try{const d=await api("/market-price?timeframe=M5");if(!d.success||!Number.isFinite(Number(d.price)))throw Error("Invalid market price response");
    const p=Number(d.price).toFixed(3);["overviewPrice","mainPrice","marketPrice"].forEach(id=>$(id).textContent=p);
@@ -178,7 +179,7 @@ document.addEventListener("DOMContentLoaded", () => {
    try{const d=await request("/mt5/pair",{method:"POST",body:JSON.stringify({label:$("bridgeLabel").value})});$("bridgeToken").value=d.bridgeToken;$("bridgeTokenBox").classList.remove("hidden");message("bridgeMessage","Connection created. Copy the token now; it cannot be displayed again.");loadBridges();}
    catch(e){message("bridgeMessage",e.message);}finally{createBridge.disabled=false;}
  });
- if($("refreshBridges"))$("refreshBridges").addEventListener("click",loadBridges);
+ if($("refreshBridges"))$("refreshBridges").addEventListener("click",()=>{loadBridges();checkMt5Bridge();});
  if($("copyBridgeToken"))$("copyBridgeToken").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("bridgeToken").value);message("bridgeMessage","Token copied.");}catch{message("bridgeMessage","Select and copy the token manually.");}});
 
  async function loadUsers(){
