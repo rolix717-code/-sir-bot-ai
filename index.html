@@ -4,7 +4,7 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#080a0f">
 <title>SIR BOT AI | Professional Trading Terminal</title>
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 <section id="authScreen" class="auth-screen">
@@ -41,7 +41,7 @@
      <button class="nav-item" data-page="vision"><span>▧</span> AI Vision Scanner</button>
     <button class="nav-item" data-page="indicators"><span>⌁</span> Indicators</button>
     <button class="nav-item" data-page="risk"><span>◇</span> Risk Center</button>
-    <button class="nav-item" data-page="account"><span>▣</span> Account</button>
+    <button class="nav-item" data-page="account"><span>▣</span> Trading Account</button>
     <button class="nav-item admin-only hidden" data-page="admin"><span>⚙</span> Admin Users</button>
   </nav>
   <div class="sidebar-bottom"><div class="system-box"><span class="live-dot"></span><div><b>SYSTEM STATUS</b><small id="sidebarStatus">Connecting...</small></div></div><div class="sidebar-brand">SIR BOT AI © 2026</div></div>
@@ -55,12 +55,12 @@
 <article class="metric-card highlight"><span>GOLD PRICE</span><h2 id="overviewPrice">Loading...</h2><small>XAUUSD / USD</small></article>
 <article class="metric-card"><span>AI DECISION</span><h2 id="overviewDecision">WAITING</h2><small id="overviewTrend">Awaiting analysis</small></article>
 <article class="metric-card"><span>AI CONFIDENCE</span><h2 id="overviewConfidence">—</h2><small>Analysis confidence</small></article>
-<article class="metric-card"><span>MT5 EXECUTION</span><h2 class="warning-text">BRIDGE REQUIRED</h2><small>Start your paired Windows MT5 bridge</small></article></div>
-<article class="card strategy-home-card"><div class="card-heading"><div><span class="eyebrow">AUTOMATED STRATEGY PROFILES</span><h3>Choose your AI trading mode</h3></div><span class="status-pill">DUAL STRATEGY</span></div><label for="strategyModeOverview">Active analysis view</label><select id="strategyModeOverview" class="vision-select"><option value="NORMAL">NORMAL AI TRADER — selective trend setups</option><option value="AGGRESSIVE_SCALPER">AGGRESSIVE AI SCALPER — faster M5 setups</option></select><p class="tiny">Both strategies are evaluated independently by the scheduled backend. This selector chooses which strategy to display when you run manual analysis.</p><button class="gold-button" id="openSelectedStrategy">OPEN STRATEGY ANALYSIS →</button></article>
+<article class="metric-card"><span>SIGNAL MODE</span><h2>ANALYSIS</h2><small>BUY / SELL alerts only</small></article></div>
+<article class="card strategy-home-card"><div class="card-heading"><div><span class="eyebrow">AUTOMATED STRATEGY PROFILES</span><h3>Choose your AI trading mode</h3></div><span class="status-pill">DUAL STRATEGY</span></div><label for="strategyModeOverview">Active analysis view</label><select id="strategyModeOverview" class="vision-select"><option value="NORMAL">NORMAL AI TRADER — selective trend setups</option><option value="AGGRESSIVE_SCALPER">AGGRESSIVE AI SCALPER — faster M5 setups</option></select><p class="tiny">Both strategies are evaluated independently. Only clear BUY or SELL signals are sent to Telegram.</p><button class="gold-button" id="openSelectedStrategy">OPEN STRATEGY ANALYSIS →</button></article>
 <div class="content-grid">
 <article class="card"><div class="card-heading"><div><span class="eyebrow">MARKET OVERVIEW</span><h3>Live Gold Market</h3></div><span class="status-pill" id="marketStatus">CONNECTING</span></div><div class="price-display" id="mainPrice">Loading...</div><div class="three-stats"><div><small>BID</small><b id="mainBid">—</b></div><div><small>ASK</small><b id="mainAsk">—</b></div><div><small>SPREAD</small><b id="mainSpread">—</b></div></div><button class="gold-button" data-open="market">Open Market Dashboard →</button></article>
 <article class="card"><div class="card-heading"><div><span class="eyebrow">ARTIFICIAL INTELLIGENCE</span><h3>Latest AI Analysis</h3></div><span class="ai-symbol">✦</span></div><div class="decision-display" id="overviewAI">WAITING</div><p class="muted" id="overviewReason">No analysis available yet.</p><button class="gold-button" data-open="intelligence">Open AI Dashboard →</button></article></div>
-<article class="card"><div class="card-heading"><div><span class="eyebrow">SYSTEM HEALTH</span><h3>Connection Monitor</h3></div></div><div class="connection-grid"><div><span class="live-dot"></span><b>Cloudflare Backend</b><small id="backendStatus">Checking...</small></div><div><span class="live-dot"></span><b>Market Data</b><small id="marketConnection">Checking...</small></div><div><span class="live-dot"></span><b>AI Provider</b><small id="aiConnection">Checking...</small></div><div><span class="warning-dot" id="mt5ExecutionDot"></span><b>MT5 Execution</b><small id="mt5ExecutionStatus">Checking bridge...</small></div></div></article>
+<article class="card"><div class="card-heading"><div><span class="eyebrow">SYSTEM HEALTH</span><h3>Connection Monitor</h3></div></div><div class="connection-grid"><div><span class="live-dot"></span><b>Cloudflare Backend</b><small id="backendStatus">Checking...</small></div><div><span class="live-dot"></span><b>Market Data</b><small id="marketConnection">Checking...</small></div><div><span class="live-dot"></span><b>AI Provider</b><small id="aiConnection">Checking...</small></div></div></article>
 </section>
 
 <section class="page" id="page-market"><div class="page-heading"><span class="eyebrow">MARKET INTELLIGENCE</span><h1>Live Market</h1><p>Live XAUUSD market price information.</p></div><article class="card market-hero"><span class="eyebrow">XAUUSD / GOLD</span><div class="price-display large" id="marketPrice">Loading...</div><span class="status-pill" id="marketStatus2">CONNECTING</span><div class="three-stats"><div><small>BID</small><b id="marketBid">—</b></div><div><small>ASK</small><b id="marketAsk">—</b></div><div><small>SPREAD</small><b id="marketSpread">—</b></div></div><div class="market-meta"><span>Timeframe: M5</span><span>Last update: <b id="marketUpdated">Waiting...</b></span></div><button class="gold-button" id="refreshMarket">Refresh Market Data</button><p class="muted" id="marketMessage">Waiting for market data...</p></article></section>
@@ -98,12 +98,38 @@
 
 <section class="page" id="page-risk"><div class="page-heading"><span class="eyebrow">CAPITAL PROTECTION</span><h1>Risk Center</h1><p>Configure proposed risk parameters.</p></div><article class="card"><div class="card-heading"><h3>Risk Configuration</h3><span class="status-pill">PROPOSED</span></div><label for="riskPct">Risk per trade <b id="riskValue">1%</b></label><input type="range" id="riskPct" min="0.25" max="2" step="0.25" value="1"><div class="range-labels"><span>0.25%</span><span>2%</span></div><div class="risk-row"><span>Daily loss limit</span><b>3% proposed</b></div><div class="risk-row"><span>Trading instrument</span><b>XAUUSD</b></div><div class="risk-row"><span>Automated position sizing</span><b>Not activated</b></div><div class="risk-row"><span>Trade execution</span><b class="warning-text">DISABLED</b></div><p class="tiny">These settings are for planning only. They do not control live trades.</p></article></section>
 
-<section class="page" id="page-account"><div class="page-heading"><span class="eyebrow">ACCOUNT MANAGEMENT</span><h1>Trading Account</h1><p>MT5 connection setup. This starter build uses a locally logged-in MT5 terminal; centralized VPS onboarding is a later deployment step.</p></div><article class="card"><div class="card-heading"><h3>Connect an MT5 terminal</h3><span class="status-pill">DEMO TESTING · EXECUTION OFF</span></div><label for="bridgeLabel">Connection name</label><input id="bridgeLabel" value="My MT5 terminal" maxlength="60" style="display:block;width:100%;max-width:420px;padding:12px;background:#080e17;border:1px solid var(--border);border-radius:8px;color:#fff;margin:8px 0 14px"><button class="gold-button" id="createBridge">GENERATE MT5 CONNECTION</button><p class="form-message" id="bridgeMessage"></p><div id="bridgeTokenBox" class="hidden"><p class="tiny">Copy this one-time token into your local Windows bridge. It will not be shown again.</p><textarea id="bridgeToken" readonly rows="3" style="width:100%;background:#080e17;color:#fff;border:1px solid var(--border);border-radius:8px;padding:10px"></textarea><button class="outline-button" id="copyBridgeToken">COPY TOKEN</button></div></article><article class="card"><div class="card-heading"><h3>Your MT5 connections</h3><button class="outline-button" id="refreshBridges">REFRESH</button></div><div id="bridgeList" class="muted">Loading connections...</div><p class="tiny">Never enter or send your broker password through this page. This build does not collect or store MT5 passwords. Keep your broker credentials inside the official MT5 terminal. Your bridge token is a secret; do not share it.</p><p class="tiny">SAFETY NOTICE: MT5 execution is OFF by default and the bridge is locked to DEMO accounts. Pairing an account does not authorize trading. Customer consent and further VPS-side safeguards are required before any live trading feature is enabled.</p></article></section>
+
+
+<section class="page" id="page-account">
+ <div class="page-heading"><span class="eyebrow">BROKER ACCOUNT</span><h1>Trading Account</h1><p>Connect an MT5 account and monitor its trading statistics.</p></div>
+ <article class="card account-connect-card">
+  <div class="card-heading"><div><span class="eyebrow">MT5 CONNECTION</span><h3>Connect your broker account</h3></div><span class="status-pill">NOT CONNECTED</span></div>
+  <div class="account-form-grid">
+   <label>Broker<select id="accountBroker" class="vision-select"><option value="">Choose broker</option><option>Exness</option><option>XM</option><option>HFM</option><option>JustMarkets</option><option>IC Markets</option><option>Pepperstone</option><option>Other</option></select></label>
+   <label>MT5 account login<input id="accountLogin" type="text" inputmode="numeric" autocomplete="off" placeholder="Enter MT5 account number"></label>
+   <label>Broker server<input id="accountServer" type="text" autocomplete="off" placeholder="e.g. Exness-MT5Real..."></label>
+   <label>MT5 trading password<input id="accountPassword" type="password" autocomplete="new-password" placeholder="Do not enter a real password yet"></label>
+  </div>
+  <button class="gold-button" id="connectAccountButton" type="button">CONNECT MT5 ACCOUNT</button>
+  <p class="form-message" id="accountConnectMessage">Secure VPS connection is not configured yet. This form is a preview only; do not enter or submit real broker credentials.</p>
+  <p class="tiny">Never use your broker website password. When account connection is enabled, credentials must be sent over an authenticated encrypted connection and stored encrypted. They must never be visible to other customers or exposed in the browser.</p>
+ </article>
+ <div class="account-metrics-grid">
+  <article class="metric-card"><span>BALANCE</span><h2 id="accountBalance">—</h2><small>Broker account balance</small></article>
+  <article class="metric-card"><span>EQUITY</span><h2 id="accountEquity">—</h2><small>Balance plus floating P/L</small></article>
+  <article class="metric-card"><span>FREE MARGIN</span><h2 id="accountFreeMargin">—</h2><small>Available margin</small></article>
+  <article class="metric-card"><span>FLOATING P/L</span><h2 id="accountFloatingPL">—</h2><small>Open trade profit/loss</small></article>
+ </div>
+ <article class="card"><div class="card-heading"><div><span class="eyebrow">ACCOUNT ACTIVITY</span><h3>Account overview</h3></div><span class="status-pill">AWAITING CONNECTION</span></div>
+  <div class="account-details-grid"><div><small>ACCOUNT TYPE</small><b id="accountType">—</b></div><div><small>LEVERAGE</small><b id="accountLeverage">—</b></div><div><small>TRADING SERVER</small><b id="accountServerView">—</b></div><div><small>OPEN POSITIONS</small><b id="accountOpenPositions">—</b></div><div><small>MARGIN LEVEL</small><b id="accountMarginLevel">—</b></div><div><small>LAST UPDATED</small><b id="accountLastUpdated">—</b></div></div>
+  <div class="divider"></div><h3>Open positions</h3><div class="table-wrap"><table><thead><tr><th>SYMBOL</th><th>TYPE</th><th>VOLUME</th><th>OPEN PRICE</th><th>PROFIT / LOSS</th></tr></thead><tbody><tr><td colspan="5" class="muted">Connect an MT5 account to view open positions.</td></tr></tbody></table></div>
+ </article>
+</section>
 
 <section class="page" id="page-admin"><div class="page-heading"><span class="eyebrow">ADMINISTRATION</span><h1>User Management</h1><p>Review registrations and activate or disable member accounts.</p></div>
-<article class="card"><div class="card-heading"><h3>MT5 bridge connections</h3><button class="outline-button" id="refreshAdminMt5">REFRESH</button></div><p class="tiny">Shows bridge registration and last heartbeat only. Balance, equity, positions and broker login are not yet supplied by the current bridge.</p><div class="table-wrap"><table><thead><tr><th>Customer</th><th>Email</th><th>Connection</th><th>State</th><th>Trading</th><th>Last seen</th></tr></thead><tbody id="adminMt5Table"><tr><td colspan="6">Loading connections...</td></tr></tbody></table></div></article><article class="card"><div class="card-heading"><h3>Registered users</h3><button class="outline-button" id="refreshUsers">REFRESH</button></div><div id="adminMessage" class="form-message"></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead><tbody id="usersTable"><tr><td colspan="5">Loading users...</td></tr></tbody></table></div></article></section>
+<article class="card"><div class="card-heading"><h3>Registered users</h3><button class="outline-button" id="refreshUsers">REFRESH</button></div><div id="adminMessage" class="form-message"></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead><tbody id="usersTable"><tr><td colspan="5">Loading users...</td></tr></tbody></table></div></article></section>
 
-<footer><b>SIR BOT AI</b><span>GOLD EDITION © 2026</span><small>Analysis only by default. MT5 execution is OFF; demo-only safety lock enabled.</small><div class="footer-links"><a href="https://t.me/SirBotAI_Signals_Bot" target="_blank" rel="noopener">Telegram</a><a href="https://wa.me/256758760840" target="_blank" rel="noopener">WhatsApp Customer Care</a></div></footer>
+<footer><b>SIR BOT AI</b><span>GOLD EDITION © 2026</span><small>Signal analysis only. Telegram broadcasts clear BUY and SELL signals only.</small><div class="footer-links"><a href="https://t.me/SirBotAI_Signals_Bot" target="_blank" rel="noopener">Telegram</a><a href="https://wa.me/256758760840" target="_blank" rel="noopener">WhatsApp Customer Care</a></div></footer>
 </main></div>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body></html>

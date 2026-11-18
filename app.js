@@ -21,7 +21,7 @@ document.addEventListener("DOMContentLoaded", () => {
    signedUser=user;authScreen.classList.add("hidden");appShell.classList.remove("hidden");
    document.querySelectorAll(".admin-only").forEach(x=>x.classList.toggle("hidden",user.role!=="admin"));
    $("sidebarStatus").textContent=`Signed in: ${user.name||user.email||"Admin"}`;
-   checkBackend();loadMarket();loadIndicators();loadBridges();
+   checkBackend();loadMarket();loadIndicators();
    setInterval(checkBackend,30000);setInterval(loadMarket,60000);
  }
  function message(id,text){$(id).textContent=text;}
@@ -66,8 +66,7 @@ document.addEventListener("DOMContentLoaded", () => {
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
    try{return await request(path,{signal:controller.signal});}finally{clearTimeout(timer);}
  }
- async function checkBackend(){try{const d=await api("/health");$("backendStatus").textContent="ONLINE";$("sidebarStatus").textContent="Backend online";$("marketConnection").textContent=d.marketData||d.market_data;$("aiConnection").textContent=d.ai;}catch(e){$("backendStatus").textContent="OFFLINE";$("sidebarStatus").textContent="Connection failed";$("marketConnection").textContent="Unavailable";$("aiConnection").textContent="Unavailable";} await checkMt5Bridge();}
- async function checkMt5Bridge(){const label=$("mt5ExecutionStatus"),dot=$("mt5ExecutionDot");if(!label)return;try{const d=await request("/mt5/bridges");const now=Date.now();const active=(d.bridges||[]).filter(b=>b.status==="active");const live=active.filter(b=>b.last_seen&&now-Date.parse(b.last_seen)<30000);if(live.length){label.textContent=`CONNECTED · ${live.length} bridge(s) · last seen ${new Date(live[0].last_seen).toLocaleTimeString()}`;dot?.classList.remove("warning-dot");dot?.classList.add("live-dot");}else if(active.length){label.textContent="PAIRED · waiting for Windows bridge";dot?.classList.add("warning-dot");dot?.classList.remove("live-dot");}else{label.textContent="NOT PAIRED";dot?.classList.add("warning-dot");dot?.classList.remove("live-dot");}}catch(e){label.textContent="STATUS UNAVAILABLE · "+e.message;dot?.classList.add("warning-dot");dot?.classList.remove("live-dot");}}
+ async function checkBackend(){try{const d=await api("/health");$("backendStatus").textContent="ONLINE";$("sidebarStatus").textContent="Backend online";$("marketConnection").textContent=d.marketData||d.market_data;$("aiConnection").textContent=d.ai;}catch(e){$("backendStatus").textContent="OFFLINE";$("sidebarStatus").textContent="Connection failed";$("marketConnection").textContent="Unavailable";$("aiConnection").textContent="Unavailable";} }
  async function loadMarket(){
    try{const d=await api("/market-price?timeframe=M5");if(!d.success||!Number.isFinite(Number(d.price)))throw Error("Invalid market price response");
    const p=Number(d.price).toFixed(3);["overviewPrice","mainPrice","marketPrice"].forEach(id=>$(id).textContent=p);
@@ -111,6 +110,16 @@ document.addEventListener("DOMContentLoaded", () => {
  if($("openSelectedStrategy"))$("openSelectedStrategy").addEventListener("click",()=>{syncStrategySelectors($("strategyModeOverview"));openPage("intelligence");});
  $("refreshMarket").addEventListener("click",loadMarket);$("refreshIndicators").addEventListener("click",loadIndicators);$("analyzeButton").addEventListener("click",analyzeMarket);
  $("riskPct").addEventListener("input",e=>$("riskValue").textContent=e.target.value+"%");
+
+
+ // MT5 account form is intentionally preview-only until the authenticated VPS vault is deployed.
+ const connectAccountButton=$("connectAccountButton");
+ if(connectAccountButton)connectAccountButton.addEventListener("click",()=>{
+   const broker=$("accountBroker").value,login=$("accountLogin").value.trim(),server=$("accountServer").value.trim(),password=$("accountPassword").value;
+   if(!broker||!login||!server||!password){message("accountConnectMessage","Choose a broker and complete all fields to preview the connection flow.");return;}
+   $("accountPassword").value="";
+   message("accountConnectMessage","Preview only: no credentials were sent or saved. The secure Cloudflare-to-VPS account connection must be completed before real MT5 details can be accepted.");
+ });
 
  // AI Vision Scanner: screenshot-only analysis; no live execution.
  const visionFile=$("visionFile"), visionPreview=$("visionPreview"), visionAnalyze=$("visionAnalyze");
@@ -167,21 +176,6 @@ document.addEventListener("DOMContentLoaded", () => {
  });
 
 
- async function loadBridges(){
-   const box=$("bridgeList"); if(!box)return; box.textContent="Loading connections...";
-   try{const d=await request("/mt5/bridges");box.innerHTML="";
-     if(!d.bridges?.length){box.textContent="No MT5 terminals paired yet.";return;}
-     d.bridges.forEach(b=>{const row=document.createElement("div");row.className="risk-row";const label=document.createElement("span");label.textContent=`${b.label} · ${b.symbol} · ${b.status}`;const btn=document.createElement("button");btn.className="table-action disable";btn.textContent="REVOKE";btn.disabled=b.status!=="active";btn.addEventListener("click",async()=>{try{await request(`/mt5/bridges/${encodeURIComponent(b.id)}/revoke`,{method:"POST",body:"{}"});loadBridges();}catch(e){message("bridgeMessage",e.message);}});row.append(label,btn);box.appendChild(row);});
-   }catch(e){box.textContent=e.message;}
- }
- const createBridge=$("createBridge");
- if(createBridge)createBridge.addEventListener("click",async()=>{createBridge.disabled=true;message("bridgeMessage","Creating a private MT5 connection...");
-   try{const d=await request("/mt5/pair",{method:"POST",body:JSON.stringify({label:$("bridgeLabel").value})});$("bridgeToken").value=d.bridgeToken;$("bridgeTokenBox").classList.remove("hidden");message("bridgeMessage","Connection created. Copy the token now; it cannot be displayed again.");loadBridges();}
-   catch(e){message("bridgeMessage",e.message);}finally{createBridge.disabled=false;}
- });
- if($("refreshBridges"))$("refreshBridges").addEventListener("click",()=>{loadBridges();checkMt5Bridge();});
- if($("copyBridgeToken"))$("copyBridgeToken").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("bridgeToken").value);message("bridgeMessage","Token copied.");}catch{message("bridgeMessage","Select and copy the token manually.");}});
-
  async function loadUsers(){
    $("usersTable").innerHTML='<tr><td colspan="5">Loading users...</td></tr>';
    try{const d=await request("/admin/users");$("usersTable").innerHTML="";
@@ -195,20 +189,7 @@ document.addEventListener("DOMContentLoaded", () => {
    }catch(e){$("usersTable").innerHTML=`<tr><td colspan="5">${e.message}</td></tr>`;}
  }
  async function changeStatus(id,status){try{await request(`/admin/users/${encodeURIComponent(id)}/status`,{method:"POST",body:JSON.stringify({status})});message("adminMessage",`User status changed to ${status}.`);loadUsers();}catch(e){message("adminMessage",e.message);}}
- async function loadAdminMt5(){
-   const body=$("adminMt5Table"); if(!body)return; body.innerHTML='<tr><td colspan="6">Loading...</td></tr>';
-   try{const d=await request("/admin/mt5/accounts");body.innerHTML="";
-     (d.accounts||[]).forEach(x=>{const tr=document.createElement("tr");
-       const vals=[x.name||"—",x.email||"—",x.label||"MT5 bridge",x.bridge_status||"—",
-         x.execution_enabled?"ENABLED":"OFF · DEMO LOCK",
-         x.last_seen?new Date(x.last_seen).toLocaleString():"Never"];
-       vals.forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.appendChild(td);});body.appendChild(tr);
-     });
-     if(!(d.accounts||[]).length)body.innerHTML='<tr><td colspan="6">No MT5 bridges registered.</td></tr>';
-   }catch(e){body.innerHTML=`<tr><td colspan="6">${e.message}</td></tr>`;}
- }
- const refreshAdminMt5=$("refreshAdminMt5"); if(refreshAdminMt5)refreshAdminMt5.addEventListener("click",loadAdminMt5);
- document.querySelectorAll('[data-page="admin"]').forEach(btn=>btn.addEventListener("click",()=>{loadUsers();loadAdminMt5();}));
+ document.querySelectorAll('[data-page="admin"]').forEach(btn=>btn.addEventListener("click",loadUsers));
  $("refreshUsers").addEventListener("click",loadUsers);
  boot();
 });
