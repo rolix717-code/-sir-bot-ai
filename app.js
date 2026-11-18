@@ -86,8 +86,8 @@ document.addEventListener("DOMContentLoaded", () => {
    }catch(e){$("indicatorMessage").textContent="Indicator error: "+e.message;}
  }
  async function analyzeMarket(){
-   const b=$("analyzeButton");b.disabled=true;b.textContent="ANALYZING XAUUSD...";$("aiStatus").textContent="AI analysis running";$("aiReasoning").textContent="Analyzing M5, M15, H1 and H4 market conditions...";
-   try{const d=await api("/analyze-live",60000),a=d.analysis;if(!a)throw Error(d.reason||"AI response unavailable");
+   const b=$("analyzeButton"),strategy=$("strategyMode").value; b.disabled=true;b.textContent="ANALYZING XAUUSD...";$("aiStatus").textContent="AI analysis running";$("aiReasoning").textContent=`Running ${strategy} profile using the available M5/M15/H1/H4 feed...`;
+   try{const d=await api("/analyze-live?strategy="+encodeURIComponent(strategy),60000),a=d.analysis;if(!a)throw Error(d.reason||"AI response unavailable");
    const decision=String(d.signal?.decision||a.decision||"WAIT").toUpperCase();
    $("aiDecision").textContent=decision;$("aiDecision").className="decision-display "+decision.toLowerCase();
    $("overviewDecision").textContent=decision;$("overviewAI").textContent=decision;$("overviewAI").className="decision-display "+decision.toLowerCase();
@@ -99,6 +99,7 @@ document.addEventListener("DOMContentLoaded", () => {
    }catch(e){$("aiReasoning").textContent="Analysis failed: "+e.message;}
    finally{b.disabled=false;b.textContent="✦ ANALYZE XAUUSD";}
  }
+ if($("strategyMode"))$("strategyMode").addEventListener("change",()=>{$("strategyDescription").textContent=$("strategyMode").value==="AGGRESSIVE_SCALPER"?"Faster M5 momentum entries with M15 confirmation and H1 context. Both strategies are also evaluated automatically for MT5 execution.":"Normal mode uses M15/H1/H4 confirmation with M5 entry timing. Both strategies are also evaluated automatically for MT5 execution.";});
  $("refreshMarket").addEventListener("click",loadMarket);$("refreshIndicators").addEventListener("click",loadIndicators);$("analyzeButton").addEventListener("click",analyzeMarket);
  $("riskPct").addEventListener("input",e=>$("riskValue").textContent=e.target.value+"%");
 
