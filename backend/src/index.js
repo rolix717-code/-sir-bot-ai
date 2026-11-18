@@ -771,7 +771,7 @@ ${signal.reasoning}
 ${signal.riskWarning || "Trading involves risk."}
 ━━━━━━━━━━━━━━━━━━
 STATUS: ANALYSIS ONLY
-MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
+SIGNAL BROADCASTS: CLEAR BUY/SELL ONLY
 SIR BOT AI
 `.trim();
 }
@@ -988,7 +988,7 @@ Resolved signals: ${report.resolved}
 Method: reports each TP1, TP2, and TP3 hit; SL ends tracking. Levels touched in the same M5 candle as SL are treated conservatively as SL.
 If both are touched in one candle, it is counted as an SL.
 This is historical signal tracking, not guaranteed future performance.
-MT5 execution: strategy signals are queued for paired MT5 bridges
+Telegram broadcasts: clear BUY/SELL signals only
 `.trim();
 }
 
@@ -1137,7 +1137,7 @@ Available commands:
 Market: XAUUSD
 Analysis: M5 / M15 / H1 / H4
 Automatic reports: Every 5 minutes when the scheduled trigger is active.
-MT5 execution: strategy signals are queued for paired MT5 bridges
+Telegram broadcasts: clear BUY/SELL signals only
 SIR BOT AI
 `.trim());
     return;
@@ -1187,7 +1187,7 @@ Timeframe: ${latest.timeframe}
 Candle time: ${latest.candleTime}
 Candle age: ${latest.ageMinutes} minutes
 Fresh: ${latest.fresh ? "YES" : "NO"}
-MT5 execution: strategy signals are queued for paired MT5 bridges
+Telegram broadcasts: clear BUY/SELL signals only
 SIR BOT AI
 `.trim());
     return;
@@ -1281,93 +1281,16 @@ function kampalaTime() {
   });
 }
 
-function formatScheduledReport(result) {
-  const checkedAt = kampalaTime();
-
-  if (!result.success) {
-    return `
-🟡 SIR BOT AI — XAUUSD
-⏱ AUTOMATIC 5-MINUTE REPORT
-━━━━━━━━━━━━━━━━━━
-📊 DECISION: WAIT
-${result.latestPrice?.price != null ? `📍 LATEST PRICE: ${result.latestPrice.price}` : ""}
-${result.latestPrice?.candleTime ? `🕒 CANDLE: ${result.latestPrice.candleTime}` : ""}
-⚠️ MARKET DATA:
-${result.reason || "Market data is not ready. No trade signal issued."}
-━━━━━━━━━━━━━━━━━━
-No BUY or SELL signal issued.
-MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
-🕒 Kampala time: ${checkedAt}
-SIR BOT AI
-`.trim();
-  }
-
-  const signal = result.signal;
-  const analysis = result.analysis;
-  const market = result.market || {};
-  const trendLine = [
-    `M5: ${market.M5?.trend || "N/A"}`,
-    `M15: ${market.M15?.trend || "N/A"}`,
-    `H1: ${market.H1?.trend || "N/A"}`,
-    `H4: ${market.H4?.trend || "N/A"}`
-  ].join(" | ");
-
-  if (signal?.decision === "BUY" || signal?.decision === "SELL") {
-    return `
-${formatSignal(signal)}
-━━━━━━━━━━━━━━━━━━
-📊 MULTI-TIMEFRAME:
-${trendLine}
-⏱ AUTOMATIC 5-MINUTE REPORT
-🕒 Kampala time: ${checkedAt}
-`.trim();
-  }
-
-  return `
-🟡 SIR BOT AI — XAUUSD
-⏱ AUTOMATIC 5-MINUTE REPORT
-━━━━━━━━━━━━━━━━━━
-📊 DECISION: WAIT
-📍 LATEST PRICE: ${result.latestPrice?.price ?? "N/A"}
-🧠 AI ORIGINAL DECISION: ${analysis?.decision ?? "N/A"}
-📈 AI TREND: ${analysis?.trend ?? "N/A"}
-🧠 AI SCORE: ${analysis?.confidence ?? "N/A"}/100
-🏆 A+ SETUP SCORE: ${analysis?.setupScore ?? "N/A"}/100
-📊 MULTI-TIMEFRAME:
-${trendLine}
-━━━━━━━━━━━━━━━━━━
-📝 REASON:
-${signal?.reason || analysis?.reasoning || "No clear trading setup."}
-⚠️ RISK:
-${analysis?.risk_warning || "Trading involves risk. Wait for a clear setup."}
-━━━━━━━━━━━━━━━━━━
-NO TRADE SIGNAL ISSUED.
-MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
-🕒 Kampala time: ${checkedAt}
-SIR BOT AI
-`.trim();
-}
-
 async function scheduledAnalysis(env) {
   // Telegram broadcast policy: send valid BUY/SELL signals and each TP1/TP2/TP3/SL
-  // outcome report only. WAIT decisions, market summaries, and system errors
-  // remain in Worker logs and are never broadcast to subscribers.
+  // BUY/SELL signal messages only. WAIT decisions, TP/SL reports, market summaries,
+  // and system errors are never broadcast to subscribers.
   try {
     const tracking = await monitorPendingSignals(env);
     console.log("SIR BOT signal tracking checked:", JSON.stringify({
       checked: tracking.checked,
       events: tracking.events.length
     }));
-
-    // Each newly reached TP level is reported separately; SL is reported too.
-    // No routine status spam.
-    for (const record of tracking.events) {
-      try {
-        await sendTelegram(env, formatOutcomeReport(record));
-      } catch (telegramError) {
-        console.error("Telegram TP/SL outcome report failed:", telegramError.message);
-      }
-    }
 
     const results = await Promise.all([
       runAnalysis(env, false, "NORMAL"),
@@ -1386,8 +1309,6 @@ async function scheduledAnalysis(env) {
       }
 
       await recordSignalForTracking(env, result.signal);
-      const bridgeQueue = await userQueueSignal(env, result.signal);
-      console.log("MT5 per-user bridge queue:", JSON.stringify(bridgeQueue));
 
       // sendUniqueSignal provides per-strategy deduplication; it broadcasts only
       // the formatted BUY/SELL signal and suppresses repeated candle alerts.
@@ -1688,7 +1609,7 @@ export default {
         if (bridgeResult) return bridgeResult;
       }
 
-      if (path.startsWith("/auth/") || path === "/admin/users" || path.startsWith("/admin/users/") || path === "/admin/mt5/accounts") {
+      if (path.startsWith("/auth/") || path === "/admin/users" || path.startsWith("/admin/users/")) {
         const authResult = await authRoutes(request, env, path);
         if (authResult) return authResult;
       }
@@ -1723,7 +1644,6 @@ export default {
           telegramWebhook: env.TELEGRAM_WEBHOOK_SECRET ? "configured" : "missing",
           kv: env.SIGNAL_DEDUPE ? "configured" : "missing",
           trading: "disabled",
-          mt5Bridge: env.MT5_BRIDGE_SECRET ? "configured_dry_run_only" : "missing",
           checkedAt: new Date().toISOString()
         });
       }
