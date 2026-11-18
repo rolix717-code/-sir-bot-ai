@@ -1473,7 +1473,7 @@ async function ensureUserBridgeTables(env) {
     label TEXT NOT NULL DEFAULT 'My MT5 terminal', status TEXT NOT NULL DEFAULT 'active',
     symbol TEXT NOT NULL DEFAULT 'XAUUSDm', risk_percent REAL NOT NULL DEFAULT 0.25,
     max_positions INTEGER NOT NULL DEFAULT 5, daily_loss_limit REAL NOT NULL DEFAULT 1,
-    execution_enabled INTEGER NOT NULL DEFAULT 1, demo_only INTEGER NOT NULL DEFAULT 0,
+    execution_enabled INTEGER NOT NULL DEFAULT 0, demo_only INTEGER NOT NULL DEFAULT 1,
     last_seen TEXT, created_at TEXT NOT NULL, revoked_at TEXT
   )`).run();
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mt5_user_signal_queue (
@@ -1488,6 +1488,8 @@ async function ensureUserBridgeTables(env) {
   // Backward-compatible migration for installations created before strategy-aware queues.
   try { await env.DB.prepare(`ALTER TABLE mt5_user_signal_queue ADD COLUMN strategy TEXT NOT NULL DEFAULT 'NORMAL'`).run(); } catch (_) {}
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_mt5_user_queue ON mt5_user_signal_queue(bridge_id,status,expires_at,created_at)`).run();
+  // Safety migration: lock every existing and new bridge until separately reviewed.
+  await env.DB.prepare(`UPDATE mt5_bridges SET execution_enabled=0, demo_only=1`).run();
 }
 async function bridgeForRequest(request, env) {
   const token=(request.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
@@ -1504,8 +1506,8 @@ async function userBridgeRoutes(request,env,path){
   if(path==='/mt5/pair' && request.method==='POST'){
     const body=await jsonBody(request); const label=String(body.label||'My MT5 terminal').trim().slice(0,60)||'My MT5 terminal';
     const id=crypto.randomUUID(), token=randomToken(), hash=await sha256(token), now=new Date().toISOString();
-    await env.DB.prepare(`INSERT INTO mt5_bridges(id,user_id,token_hash,label,symbol,risk_percent,max_positions,daily_loss_limit,execution_enabled,demo_only,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(id,user.id,hash,label,'XAUUSDm',0.25,5,1,1,0,now).run();
-    return authResponse({success:true,bridge:{id,label,status:'active',symbol:'XAUUSDm',riskPercent:0.25,maxPositions:5,dailyLossLimit:1,executionEnabled:true,demoOnly:false},bridgeToken:token,warning:'MT5 execution is enabled for this connection. The local bridge supports verified DEMO and REAL MT5 accounts, detects the connected account mode, and enforces local position and risk limits.'},201);
+    await env.DB.prepare(`INSERT INTO mt5_bridges(id,user_id,token_hash,label,symbol,risk_percent,max_positions,daily_loss_limit,execution_enabled,demo_only,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(id,user.id,hash,label,'XAUUSDm',0.25,5,1,0,1,now).run();
+    return authResponse({success:true,bridge:{id,label,status:'active',symbol:'XAUUSDm',riskPercent:0.25,maxPositions:5,dailyLossLimit:1,executionEnabled:false,demoOnly:true},bridgeToken:token,warning:'MT5 execution is enabled for this connection. The local bridge supports verified DEMO and REAL MT5 accounts, detects the connected account mode, and enforces local position and risk limits.'},201);
   }
   if(path==='/mt5/bridges' && request.method==='GET'){
     const rows=await env.DB.prepare(`SELECT id,label,status,symbol,risk_percent,max_positions,daily_loss_limit,execution_enabled,demo_only,last_seen,created_at FROM mt5_bridges WHERE user_id=? ORDER BY created_at DESC`).bind(user.id).all();
@@ -1630,6 +1632,21 @@ async function authRoutes(request, env, path) {
     return authResponse({ success: true, users: result.results || [] });
   }
 
+  if (path === "/admin/mt5/accounts" && request.method === "GET") {
+    const admin = await requireAdmin(request, env);
+    if (!admin) return authResponse({ error: "Admin access required." }, 403);
+    await ensureUserBridgeTables(env);
+    const result = await env.DB.prepare(`
+      SELECT b.id AS bridge_id, b.user_id, u.name, u.email, u.status AS user_status,
+             b.label, b.status AS bridge_status, b.symbol, b.execution_enabled,
+             b.demo_only, b.last_seen, b.created_at
+      FROM mt5_bridges b JOIN users u ON u.id=b.user_id
+      ORDER BY b.created_at DESC
+    `).all();
+    return authResponse({ success: true, accounts: result.results || [],
+      note: "This build reports bridge metadata only. It does not yet collect MT5 balance, equity, positions, or broker credentials." });
+  }
+
   const statusMatch = path.match(/^\/admin\/users\/([^/]+)\/status$/);
   if (statusMatch && request.method === "POST") {
     const admin = await requireAdmin(request, env);
@@ -1671,7 +1688,7 @@ export default {
         if (bridgeResult) return bridgeResult;
       }
 
-      if (path.startsWith("/auth/") || path === "/admin/users" || path.startsWith("/admin/users/")) {
+      if (path.startsWith("/auth/") || path === "/admin/users" || path.startsWith("/admin/users/") || path === "/admin/mt5/accounts") {
         const authResult = await authRoutes(request, env, path);
         if (authResult) return authResult;
       }
