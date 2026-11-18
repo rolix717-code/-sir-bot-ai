@@ -16,6 +16,8 @@ POLL_SECONDS = max(2, int(os.getenv('SIRBOT_POLL_SECONDS', '3')))
 LOCAL_MAX_POSITIONS = min(5, max(1, int(os.getenv('SIRBOT_MAX_POSITIONS', '5'))))
 LOCAL_RISK_PERCENT = min(0.25, max(0.05, float(os.getenv('SIRBOT_RISK_PERCENT', '0.25'))))
 LOCAL_DAILY_LOSS_LIMIT = min(1.0, max(0.25, float(os.getenv('SIRBOT_DAILY_LOSS_LIMIT', '1.0'))))
+EXECUTION_ENABLED = os.getenv('SIRBOT_EXECUTION_ENABLED', 'false').strip().lower() == 'true'
+DEMO_ONLY = os.getenv('SIRBOT_DEMO_ONLY', 'true').strip().lower() != 'false'
 MAGIC = 26111801
 DEVIATION = 30
 DB_PATH = Path(__file__).with_name('sirbot_execution_ledger.sqlite3')

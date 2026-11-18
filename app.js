@@ -195,6 +195,20 @@ document.addEventListener("DOMContentLoaded", () => {
    }catch(e){$("usersTable").innerHTML=`<tr><td colspan="5">${e.message}</td></tr>`;}
  }
  async function changeStatus(id,status){try{await request(`/admin/users/${encodeURIComponent(id)}/status`,{method:"POST",body:JSON.stringify({status})});message("adminMessage",`User status changed to ${status}.`);loadUsers();}catch(e){message("adminMessage",e.message);}}
+ async function loadAdminMt5(){
+   const body=$("adminMt5Table"); if(!body)return; body.innerHTML='<tr><td colspan="6">Loading...</td></tr>';
+   try{const d=await request("/admin/mt5/accounts");body.innerHTML="";
+     (d.accounts||[]).forEach(x=>{const tr=document.createElement("tr");
+       const vals=[x.name||"—",x.email||"—",x.label||"MT5 bridge",x.bridge_status||"—",
+         x.execution_enabled?"ENABLED":"OFF · DEMO LOCK",
+         x.last_seen?new Date(x.last_seen).toLocaleString():"Never"];
+       vals.forEach(v=>{const td=document.createElement("td");td.textContent=v;tr.appendChild(td);});body.appendChild(tr);
+     });
+     if(!(d.accounts||[]).length)body.innerHTML='<tr><td colspan="6">No MT5 bridges registered.</td></tr>';
+   }catch(e){body.innerHTML=`<tr><td colspan="6">${e.message}</td></tr>`;}
+ }
+ const refreshAdminMt5=$("refreshAdminMt5"); if(refreshAdminMt5)refreshAdminMt5.addEventListener("click",loadAdminMt5);
+ document.querySelectorAll('[data-page="admin"]').forEach(btn=>btn.addEventListener("click",()=>{loadUsers();loadAdminMt5();}));
  $("refreshUsers").addEventListener("click",loadUsers);
  boot();
 });
