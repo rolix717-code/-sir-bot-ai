@@ -478,6 +478,89 @@ function strategyProfile(value) {
   };
 }
 
+async function analyzeChartImage(request, env) {
+  if (!env.TCHAVI_API_KEY) return response({ error: "TCHAVI_API_KEY is missing in Cloudflare Workers." }, 503);
+  if (request.method !== "POST") return response({ error: "POST method required." }, 405);
+
+  let form;
+  try { form = await request.formData(); }
+  catch { return response({ error: "Upload a chart image using multipart form data." }, 400); }
+
+  const file = form.get("chart");
+  const timeframe = String(form.get("timeframe") || "M5").toUpperCase();
+  if (!file || typeof file.arrayBuffer !== "function") return response({ error: "Chart image is required." }, 400);
+  if (!["M1", "M5", "M15", "H1", "H4", "D1"].includes(timeframe)) return response({ error: "Unsupported timeframe." }, 400);
+  if (file.size <= 0 || file.size > 5 * 1024 * 1024) return response({ error: "Image must be between 1 byte and 5 MB." }, 413);
+
+  const mime = String(file.type || "").toLowerCase();
+  if (!["image/png", "image/jpeg", "image/webp"].includes(mime)) return response({ error: "Only PNG, JPG and WEBP images are supported." }, 415);
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunkSize, bytes.length)));
+  }
+  const imageDataUrl = `data:${mime};base64,${btoa(binary)}`;
+
+  const systemPrompt = `You are SIR BOT AI Vision, an image-based XAUUSD chart analyst. Examine only what is visibly present in the uploaded chart screenshot. The chart timeframe is ${timeframe}. Return ONLY valid JSON with this exact shape:
+{"decision":"WAIT","trend":"SIDEWAYS","confidence":0,"market_structure":"unclear","entry":null,"stop_loss":null,"take_profit_1":null,"take_profit_2":null,"take_profit_3":null,"support":null,"resistance":null,"reasoning":"","risk_warning":""}
+Rules: decision must be BUY, SELL, or WAIT. trend must be BULLISH, BEARISH, or SIDEWAYS. confidence must be an integer 0-100 and is not a win probability. Numeric levels must be numbers or null. Never guess unreadable prices, instrument, or levels. If symbol is not clearly XAUUSD, chart is cropped/blurred, price scale is unreadable, or evidence is mixed, choose WAIT and explain. Only propose entry/SL/TP when a clear setup is visible; keep stop loss beyond invalidation and targets in the direction of the trade with sensible risk/reward. Do not claim live price access. Include a concise market_structure and reasoning. risk_warning must state that screenshot analysis is not live data and must be independently verified. This is analysis only and must never trigger a trade.`;
+
+  let upstream;
+  try {
+    upstream = await fetch(TCHAVI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.TCHAVI_API_KEY}` },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        temperature: 0.1,
+        max_tokens: 900,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: [
+            { type: "text", text: `Analyze this XAUUSD chart screenshot on ${timeframe}. Return the required JSON only.` },
+            { type: "image_url", image_url: { url: imageDataUrl } }
+          ] }
+        ]
+      }),
+      signal: AbortSignal.timeout(55000)
+    });
+  } catch (error) {
+    return response({ error: error?.name === "TimeoutError" ? "Vision analysis timed out. Try again with a smaller screenshot." : "Could not reach the AI vision service." }, 502);
+  }
+
+  const upstreamData = await upstream.json().catch(() => ({}));
+  if (!upstream.ok) {
+    const detail = upstreamData?.error?.message || upstreamData?.message || `AI provider returned HTTP ${upstream.status}.`;
+    return response({ error: `Vision AI error: ${String(detail).slice(0, 300)}` }, 502);
+  }
+
+  try {
+    const raw = upstreamData.choices?.[0]?.message?.content;
+    const parsed = parseAI(typeof raw === "string" ? raw : JSON.stringify(raw));
+    const decision = String(parsed.decision || "WAIT").toUpperCase();
+    const trend = String(parsed.trend || "SIDEWAYS").toUpperCase();
+    const confidence = Number(parsed.confidence);
+    if (!["BUY", "SELL", "WAIT"].includes(decision)) throw new Error("Vision AI returned an invalid decision.");
+    if (!["BULLISH", "BEARISH", "SIDEWAYS"].includes(trend)) throw new Error("Vision AI returned an invalid trend.");
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 100) throw new Error("Vision AI returned invalid confidence.");
+    const level = value => value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
+    const analysis = {
+      decision, trend, confidence: Math.round(confidence),
+      market_structure: String(parsed.market_structure || "Not clear from screenshot"),
+      entry: level(parsed.entry), stop_loss: level(parsed.stop_loss),
+      take_profit_1: level(parsed.take_profit_1), take_profit_2: level(parsed.take_profit_2),
+      take_profit_3: level(parsed.take_profit_3), support: level(parsed.support),
+      resistance: level(parsed.resistance), reasoning: String(parsed.reasoning || "No reasoning provided."),
+      risk_warning: String(parsed.risk_warning || "Screenshot-only analysis. Verify all levels against live market data before making any decision.")
+    };
+    return response({ success: true, timeframe, analysis, source: "uploaded_screenshot_only", execution: "disabled" });
+  } catch (error) {
+    return response({ error: `Could not read the AI vision result: ${error.message}` }, 502);
+  }
+}
+
 async function analyzeAI(market, env, profile = strategyProfile("NORMAL")) {
   if (!env.TCHAVI_API_KEY) throw new Error("TCHAVI_API_KEY is missing.");
 
@@ -734,6 +817,11 @@ async function recordSignalForTracking(env, signal) {
     entry: signal.entry,
     stopLoss: signal.stopLoss,
     takeProfit: signal.tp1,
+    tp1: signal.tp1,
+    tp2: signal.tp2,
+    tp3: signal.tp3,
+    strategy: signal.strategy || "NORMAL",
+    hitTargets: [],
     confidence: signal.confidence,
     candleTime: signal.candleTime,
     entryTimestamp: Date.parse(signal.candleTime),
@@ -777,47 +865,68 @@ async function monitorPendingSignals(env) {
 
   const records = await listAccuracyRecords(env);
   const pending = records.filter(r => r.status === "PENDING" && Number.isFinite(r.entryTimestamp));
-  if (!pending.length) return { checked: 0, resolved: [] };
+  if (!pending.length) return { checked: 0, events: [] };
 
   const candles = await getCandles(env, "M5");
-  const resolved = [];
+  const events = [];
+  const targets = ["tp1", "tp2", "tp3"];
 
   for (const record of pending) {
     const laterCandles = candles.filter(c => c.timestamp > record.entryTimestamp);
-    let result = null;
-
+    let changed = false;
     for (const candle of laterCandles) {
       const isBuy = record.decision === "BUY";
       const stopHit = isBuy ? candle.low <= record.stopLoss : candle.high >= record.stopLoss;
-      const targetHit = isBuy ? candle.high >= record.takeProfit : candle.low <= record.takeProfit;
+      const newlyHit = targets.filter(name =>
+        Number.isFinite(Number(record[name])) &&
+        !(record.hitTargets || []).includes(name.toUpperCase()) &&
+        (isBuy ? candle.high >= Number(record[name]) : candle.low <= Number(record[name]))
+      );
 
-      if (stopHit && targetHit) {
-        // If both levels occur inside one M5 candle, their order is unknowable.
-        // Count it conservatively as a loss rather than assuming TP was first.
-        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "SL and TP1 touched in the same candle; counted conservatively as SL." };
-      } else if (stopHit) {
-        result = { outcome: "LOSS", exitPrice: record.stopLoss, reason: "Stop loss reached." };
-      } else if (targetHit) {
-        result = { outcome: "WIN", exitPrice: record.takeProfit, reason: "TP1 reached." };
-      }
-
-      if (result) {
+      // If SL and a target are both inside the same M5 candle, their order is
+      // unknowable. Do not claim a TP hit; record the conservative SL outcome.
+      if (stopHit) {
         record.status = "RESOLVED";
-        record.outcome = result.outcome;
-        record.exitPrice = result.exitPrice;
-        record.resolutionReason = result.reason;
+        record.outcome = "LOSS";
+        record.exitPrice = record.stopLoss;
+        record.resolutionReason = newlyHit.length
+          ? "SL and an unreported TP level touched in the same M5 candle; counted conservatively as SL."
+          : "Stop loss reached.";
         record.resolutionCandle = candle.time;
         record.resolvedAt = new Date().toISOString();
-
-        const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
-        await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
-        resolved.push(record);
+        events.push({ ...record, eventType: "SL" });
+        changed = true;
         break;
       }
+
+      for (const targetName of newlyHit) {
+        const targetNumber = targetName.toUpperCase();
+        record.hitTargets = [...(record.hitTargets || []), targetNumber];
+        record.lastHitTarget = targetNumber;
+        record.lastHitPrice = Number(record[targetName]);
+        record.lastHitAt = new Date().toISOString();
+        events.push({ ...record, eventType: targetNumber, exitPrice: record.lastHitPrice });
+        changed = true;
+        if (targetName === "tp3") {
+          record.status = "RESOLVED";
+          record.outcome = "WIN";
+          record.exitPrice = Number(record.tp3);
+          record.resolutionReason = "TP3 reached; all take-profit targets were reached.";
+          record.resolutionCandle = candle.time;
+          record.resolvedAt = new Date().toISOString();
+          break;
+        }
+      }
+      if (record.status === "RESOLVED") break;
+    }
+
+    if (changed) {
+      const key = ACCURACY_PREFIX + encodeURIComponent(record.id);
+      await env.SIGNAL_DEDUPE.put(key, JSON.stringify(record), { expirationTtl: ACCURACY_TTL });
     }
   }
 
-  return { checked: pending.length, resolved };
+  return { checked: pending.length, events };
 }
 
 function calculateAccuracy(records) {
@@ -841,6 +950,29 @@ async function getAccuracyReport(env) {
   return { ...calculateAccuracy(records), records: records.slice(0, 30) };
 }
 
+function formatOutcomeReport(record) {
+  const isStop = record.eventType === "SL";
+  const target = record.eventType;
+  return `
+${isStop ? "🛑 STOP LOSS HIT" : `✅ ${target} HIT`} — SIR BOT AI
+━━━━━━━━━━━━━━━━━━
+📊 SIGNAL: ${record.decision}
+🧠 STRATEGY: ${record.strategy || "NORMAL"}
+💱 SYMBOL: ${record.symbol || SYMBOL}
+📍 ENTRY: ${record.entry}
+🛑 STOP LOSS: ${record.stopLoss}
+🎯 TP1: ${record.tp1 ?? record.takeProfit}
+🎯 TP2: ${record.tp2 ?? "N/A"}
+🎯 TP3: ${record.tp3 ?? "N/A"}
+📌 EVENT: ${isStop ? "STOP LOSS" : `${target} reached`}
+📉 PRICE: ${record.exitPrice}
+🕒 TIME: ${record.lastHitAt || record.resolvedAt || new Date().toISOString()}
+━━━━━━━━━━━━━━━━━━
+Signal tracking only; broker execution and fills may differ.
+SIR BOT AI
+`.trim();
+}
+
 function formatAccuracyReport(report) {
   const rate = report.winRate === null ? "N/A" : `${report.winRate}%`;
   return `
@@ -851,9 +983,9 @@ Tracked signals: ${report.total}
 ❌ Stop-loss losses: ${report.losses}
 ⏳ Still pending: ${report.pending}
 Resolved signals: ${report.resolved}
-🎯 TP1 hit rate: ${rate}
+🎯 Completed-signal rate: ${rate}
 ━━━━━━━━━━━━━━━━━━
-Method: first TP1 or SL touched on later M5 candles.
+Method: reports each TP1, TP2, and TP3 hit; SL ends tracking. Levels touched in the same M5 candle as SL are treated conservatively as SL.
 If both are touched in one candle, it is counted as an SL.
 This is historical signal tracking, not guaranteed future performance.
 MT5 execution: strategy signals are queued for paired MT5 bridges
@@ -1062,42 +1194,15 @@ SIR BOT AI
   }
 
   if (command === "/signal") {
-    await sendTelegramToChat(env, chatId, "⏳ SIR BOT AI is analyzing XAUUSD across M5, M15 and H1. Please wait...");
+    // User-requested analysis is silent unless a valid BUY or SELL signal exists.
     try {
       const result = await runAnalysis(env, false);
-      if (!result.success) {
-        await sendTelegramToChat(env, chatId, `
-🟡 SIR BOT AI — XAUUSD
-DECISION: WAIT
-Reason:
-${result.reason ?? "Market data is not ready."}
-No signal has been issued.
-MT5 execution: strategy signals are queued for paired MT5 bridges
-`.trim());
-        return;
+      if (result.success && ["BUY", "SELL"].includes(result.signal?.decision)) {
+        await sendTelegramToChat(env, chatId, formatSignal(result.signal));
       }
-
-      if (result.signal.decision === "WAIT") {
-        await sendTelegramToChat(env, chatId, `
-🟡 SIR BOT AI — XAUUSD
-DECISION: WAIT
-Latest price: ${result.latestPrice.price}
-AI decision: ${result.analysis.decision}
-AI score: ${result.analysis.confidence}/100
-Reason:
-${result.signal.reason ?? result.analysis.reasoning}
-Risk:
-${result.analysis.risk_warning || "Trading involves risk."}
-No trade signal issued.
-MT5 execution: strategy signals are queued for paired MT5 bridges
-`.trim());
-        return;
-      }
-
-      await sendTelegramToChat(env, chatId, formatSignal(result.signal));
     } catch (error) {
-      console.error("Telegram signal command error:", error);
-      await sendTelegramToChat(env, chatId, `⚠️ SIR BOT AI could not complete the analysis.\n\nReason: ${error.message}`);
+      // Keep Telegram clean: diagnostics stay in Worker logs, not subscriber chats.
+      console.error("Telegram /signal analysis failed:", error);
     }
     return;
   }
@@ -1244,63 +1349,59 @@ SIR BOT AI
 }
 
 async function scheduledAnalysis(env) {
+  // Telegram broadcast policy: send valid BUY/SELL signals and each TP1/TP2/TP3/SL
+  // outcome report only. WAIT decisions, market summaries, and system errors
+  // remain in Worker logs and are never broadcast to subscribers.
   try {
-    // Do not use runAnalysis(env, true) here: that sends only BUY/SELL.
-    // This scheduled path sends a Telegram report for BUY, SELL, and WAIT.
     const tracking = await monitorPendingSignals(env);
-    for (const resolved of tracking.resolved) {
-      await sendTelegram(env, `
-📊 SIR BOT AI — SIGNAL RESULT
-${resolved.decision} ${resolved.symbol}
-Outcome: ${resolved.outcome}
-Entry: ${resolved.entry}
-Exit: ${resolved.exitPrice}
-${resolved.resolutionReason}
-Entry candle: ${resolved.candleTime}
-Resolved candle: ${resolved.resolutionCandle}
-MT5 execution: strategy signals are queued for paired MT5 bridges
-`.trim());
+    console.log("SIR BOT signal tracking checked:", JSON.stringify({
+      checked: tracking.checked,
+      events: tracking.events.length
+    }));
+
+    // Each newly reached TP level is reported separately; SL is reported too.
+    // No routine status spam.
+    for (const record of tracking.events) {
+      try {
+        await sendTelegram(env, formatOutcomeReport(record));
+      } catch (telegramError) {
+        console.error("Telegram TP/SL outcome report failed:", telegramError.message);
+      }
     }
 
-    // Evaluate both profiles on every scheduled cycle. Each signal has a strategy-specific
-    // ID, so a NORMAL signal and a SCALPER signal from the same candle do not collide.
     const results = await Promise.all([
       runAnalysis(env, false, "NORMAL"),
       runAnalysis(env, false, "AGGRESSIVE_SCALPER")
     ]);
-    const strategyNames = ["NORMAL", "AGGRESSIVE_SCALPER"];
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (result.success && result.signal && ["BUY", "SELL"].includes(result.signal.decision)) {
-        await recordSignalForTracking(env, result.signal);
-        const bridgeQueue = await userQueueSignal(env, result.signal);
-        console.log(`MT5 ${strategyNames[i]} per-user bridge queue:`, JSON.stringify(bridgeQueue));
+
+    const broadcasts = [];
+    for (const result of results) {
+      if (!result.success || !result.signal || !["BUY", "SELL"].includes(result.signal.decision)) {
+        console.log("Telegram skipped: no BUY/SELL signal", JSON.stringify({
+          strategy: result.strategy?.id || result.signal?.strategy || "UNKNOWN",
+          decision: result.signal?.decision || "NO_SIGNAL",
+          reason: result.signal?.reason || result.reason || "Analysis unavailable"
+        }));
+        continue;
       }
-      await sendTelegram(env, formatScheduledReport(result));
+
+      await recordSignalForTracking(env, result.signal);
+      const bridgeQueue = await userQueueSignal(env, result.signal);
+      console.log("MT5 per-user bridge queue:", JSON.stringify(bridgeQueue));
+
+      // sendUniqueSignal provides per-strategy deduplication; it broadcasts only
+      // the formatted BUY/SELL signal and suppresses repeated candle alerts.
+      const sent = await sendUniqueSignal(env, result.signal);
+      broadcasts.push({ strategy: result.signal.strategy, decision: result.signal.decision, ...sent });
     }
-    const result = results[0];
-    console.log("SIR BOT scheduled dual-strategy reports sent:", JSON.stringify({
-      strategies: strategyNames,
-      decision: result.signal?.decision ?? result.decision,
-      trackedSignalsChecked: tracking.checked,
-      trackedSignalsResolved: tracking.resolved.length,
-      checkedAt: result.checkedAt ?? new Date().toISOString()
+
+    console.log("SIR BOT scheduled signal-only cycle:", JSON.stringify({
+      broadcasts,
+      checkedAt: new Date().toISOString()
     }));
   } catch (error) {
+    // Never send automated error/status messages to Telegram subscribers.
     console.error("SIR BOT scheduled analysis failed:", error.message);
-    try {
-      await sendTelegram(env, `
-⚠️ SIR BOT AI — SYSTEM ALERT
-The automatic 5-minute analysis could not be completed.
-Reason: ${error.message}
-No trade signal issued.
-MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
-🕒 Kampala time: ${kampalaTime()}
-SIR BOT AI
-`.trim());
-    } catch (telegramError) {
-      console.error("Could not send scheduled error report:", telegramError.message);
-    }
   }
 }
 
@@ -1576,7 +1677,7 @@ export default {
       }
 
       // Protect private dashboard endpoints. Public health and Telegram/cron remain available.
-      const protectedPaths = ["/market-price", "/market-check", "/indicators", "/market-candles", "/performance", "/validation", "/analyze-live"];
+      const protectedPaths = ["/market-price", "/market-check", "/indicators", "/market-candles", "/performance", "/validation", "/analyze-live", "/analyze-image"];
       if (protectedPaths.includes(path)) {
         const user = await currentUser(request, env);
         if (!user) return response({ error: "Please sign in with an active account." }, 401);
@@ -1645,6 +1746,7 @@ export default {
       }
 
       if (path === "/analyze-live") return response(await runAnalysis(env, false, url.searchParams.get("strategy") || "NORMAL"));
+      if (path === "/analyze-image") return await analyzeChartImage(request, env);
 
       if (path === "/analyze-and-notify") {
         if (request.method !== "POST") return response({ error: "POST method required." }, 405);
