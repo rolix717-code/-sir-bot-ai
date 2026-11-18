@@ -131,7 +131,7 @@ async function mt5NextSignal(env) {
       setupScore: claimed.setup_score,
       candleTime: claimed.candle_time,
       expiresAt: claimed.expires_at,
-      executionMode: "DRY_RUN_ONLY"
+      executionMode: "LIVE_MT5"
     }
   };
 }
@@ -140,8 +140,8 @@ async function mt5AcknowledgeSignal(env, body) {
   const signalId = String(body.signalId || "").trim();
   const result = String(body.result || "").toUpperCase();
   if (!/^[a-f0-9]{64}$/i.test(signalId)) return response({ error: "Valid signalId is required." }, 400);
-  if (!["RECEIVED", "DRY_RUN", "REJECTED"].includes(result)) {
-    return response({ error: "result must be RECEIVED, DRY_RUN, or REJECTED." }, 400);
+  if (!["RECEIVED", "REJECTED", "EXECUTED", "DUPLICATE"].includes(result)) {
+    return response({ error: "result must be RECEIVED, REJECTED, EXECUTED, or DUPLICATE." }, 400);
   }
   await ensureMT5QueueTable(env);
   const updated = await env.DB.prepare(`
@@ -464,12 +464,27 @@ function validateAI(data) {
   };
 }
 
-async function analyzeAI(market, env) {
+function strategyProfile(value) {
+  const strategy = String(value || "NORMAL").toUpperCase();
+  if (strategy === "AGGRESSIVE_SCALPER") return {
+    id: strategy, label: "Aggressive AI Scalper", confidence: 70, score: 85,
+    entryTimeframe: "M5", context: ["M15", "H1"],
+    prompt: "Use a faster M5 momentum/breakout approach with M15 confirmation and H1 context. Look for clean momentum continuation, retests, and volatility expansion. Avoid chasing extended candles and avoid entries when spread/volatility conditions are unsuitable. This is still selective; do not manufacture trades."
+  };
+  return {
+    id: "NORMAL", label: "Normal AI Trader", confidence: 70, score: 85,
+    entryTimeframe: "M5", context: ["M15", "H1", "H4"],
+    prompt: "Use a selective multi-timeframe trend approach. H4/H1 provide directional context, M15 confirms structure, and M5 is used only for entry timing. Prefer aligned trends, support/resistance and supply/demand confluence. Wait when timeframes conflict."
+  };
+}
+
+async function analyzeAI(market, env, profile = strategyProfile("NORMAL")) {
   if (!env.TCHAVI_API_KEY) throw new Error("TCHAVI_API_KEY is missing.");
 
   const system = `
 You are SIR BOT AI, a cautious XAUUSD market analysis assistant.
-Analyze the supplied H4, H1, M15 and M5 data. H4 is the directional context; M5 is the entry timeframe.
+Analyze the supplied H4, H1, M15 and M5 data for the ${profile.label} profile.
+${profile.prompt}
 Consider:
 - Multi-timeframe trend alignment
 - EMA structure
@@ -518,11 +533,11 @@ Confidence is not a guaranteed win probability.
 // SIGNAL
 // -------------------------
 
-function makeSignal(analysis, ind) {
+function makeSignal(analysis, ind, profile = strategyProfile("NORMAL")) {
   if (analysis.decision === "WAIT") return { decision: "WAIT", reason: analysis.reasoning };
-  if (analysis.confidence < MIN_CONFIDENCE) return { decision: "WAIT", reason: "AI confidence is below the required threshold." };
-  if (!Number.isFinite(analysis.setupScore) || analysis.setupScore < A_PLUS_MIN_SCORE) {
-    return { decision: "WAIT", reason: `A+ filter not met. Deterministic setup score: ${analysis.setupScore ?? "N/A"}/100; minimum required: ${A_PLUS_MIN_SCORE}.` };
+  if (analysis.confidence < profile.confidence) return { decision: "WAIT", reason: "AI confidence is below the required threshold." };
+  if (!Number.isFinite(analysis.setupScore) || analysis.setupScore < profile.score) {
+    return { decision: "WAIT", reason: `A+ filter not met. Deterministic setup score: ${analysis.setupScore ?? "N/A"}/100; minimum required: ${profile.score}.` };
   }
   if (analysis.decision !== analysis.setupDirection) {
     return { decision: "WAIT", reason: `AI direction conflicts with the deterministic intelligence engine (${analysis.setupDirection}, ${analysis.setupScore}/100).` };
@@ -553,7 +568,7 @@ function makeSignal(analysis, ind) {
   }
 
   return {
-    symbol: SYMBOL, timeframe: "M5", decision: analysis.decision,
+    symbol: SYMBOL, timeframe: profile.entryTimeframe, strategy: profile.id, decision: analysis.decision,
     entry: Number(entry.toFixed(3)),
     stopLoss: Number(sl.toFixed(3)),
     tp1: Number(tp1.toFixed(3)),
@@ -673,7 +688,7 @@ ${signal.reasoning}
 ${signal.riskWarning || "Trading involves risk."}
 ━━━━━━━━━━━━━━━━━━
 STATUS: ANALYSIS ONLY
-MT5 EXECUTION: DISABLED
+MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
 SIR BOT AI
 `.trim();
 }
@@ -683,7 +698,7 @@ SIR BOT AI
 // -------------------------
 
 function signalKey(signal) {
-  return ["signal", signal.symbol, signal.timeframe, signal.decision, signal.candleTime].join(":");
+  return ["signal", signal.strategy || "NORMAL", signal.symbol, signal.timeframe, signal.decision, signal.candleTime].join(":");
 }
 
 async function sendUniqueSignal(env, signal) {
@@ -707,7 +722,7 @@ async function sendUniqueSignal(env, signal) {
 
 async function recordSignalForTracking(env, signal) {
   if (!env.SIGNAL_DEDUPE || !signal || !["BUY", "SELL"].includes(signal.decision)) return;
-  const id = `${signal.candleTime}:${signal.decision}`;
+  const id = `${signal.strategy || "NORMAL"}:${signal.candleTime}:${signal.decision}`;
   const key = ACCURACY_PREFIX + encodeURIComponent(id);
   const existing = await env.SIGNAL_DEDUPE.get(key);
   if (existing) return;
@@ -841,7 +856,7 @@ Resolved signals: ${report.resolved}
 Method: first TP1 or SL touched on later M5 candles.
 If both are touched in one candle, it is counted as an SL.
 This is historical signal tracking, not guaranteed future performance.
-MT5 execution: DISABLED
+MT5 execution: strategy signals are queued for paired MT5 bridges
 `.trim();
 }
 
@@ -896,7 +911,8 @@ function aiInput(market) {
   };
 }
 
-async function runAnalysis(env, notify = false) {
+async function runAnalysis(env, notify = false, requestedStrategy = "NORMAL") {
+  const profile = strategyProfile(requestedStrategy);
   const latestPrice = await getLatestPrice(env, "M5");
   const freshness = checkFreshness(latestPrice);
 
@@ -922,14 +938,17 @@ async function runAnalysis(env, notify = false) {
   }
 
   const intelligence = buildIntelligence(market);
-  const analysis = await analyzeAI({ ...aiInput(market), deterministicIntelligence: intelligence }, env);
+  const analysis = await analyzeAI({ ...aiInput(market), strategy: profile.id, deterministicIntelligence: intelligence }, env, profile);
   analysis.setupScore = intelligence.score;
   analysis.setupDirection = intelligence.decision;
   analysis.intelligenceReasons = intelligence.reasons;
-  let signal = makeSignal(analysis, market.M5.indicators);
+  let signal = makeSignal(analysis, market.M5.indicators, profile);
 
-  if (signal.decision !== "WAIT" && !higherTimeframesAgree(signal.decision, market)) {
-    signal = { decision: "WAIT", reason: "M15 and H1 do not confirm the M5 direction." };
+  if (signal.decision !== "WAIT") {
+    const aligned = profile.id === "AGGRESSIVE_SCALPER"
+      ? ((signal.decision === "BUY" && market.M15.indicators.trend === "BULLISH") || (signal.decision === "SELL" && market.M15.indicators.trend === "BEARISH"))
+      : higherTimeframesAgree(signal.decision, market);
+    if (!aligned) signal = { decision: "WAIT", strategy: profile.id, reason: profile.id === "AGGRESSIVE_SCALPER" ? "M15 momentum does not confirm the M5 entry." : "M15, H1 and H4 do not confirm the M5 direction." };
   }
 
   let telegram = { sent: false, duplicate: false };
@@ -938,6 +957,7 @@ async function runAnalysis(env, notify = false) {
   return {
     success: true,
     symbol: SYMBOL,
+    strategy: { id: profile.id, label: profile.label, entryTimeframe: profile.entryTimeframe, confirmationTimeframes: profile.context },
     latestPrice,
     analysis,
     signal,
@@ -985,7 +1005,7 @@ Available commands:
 Market: XAUUSD
 Analysis: M5 / M15 / H1 / H4
 Automatic reports: Every 5 minutes when the scheduled trigger is active.
-MT5 execution: DISABLED
+MT5 execution: strategy signals are queued for paired MT5 bridges
 SIR BOT AI
 `.trim());
     return;
@@ -1035,7 +1055,7 @@ Timeframe: ${latest.timeframe}
 Candle time: ${latest.candleTime}
 Candle age: ${latest.ageMinutes} minutes
 Fresh: ${latest.fresh ? "YES" : "NO"}
-MT5 execution: DISABLED
+MT5 execution: strategy signals are queued for paired MT5 bridges
 SIR BOT AI
 `.trim());
     return;
@@ -1052,7 +1072,7 @@ DECISION: WAIT
 Reason:
 ${result.reason ?? "Market data is not ready."}
 No signal has been issued.
-MT5 execution: DISABLED
+MT5 execution: strategy signals are queued for paired MT5 bridges
 `.trim());
         return;
       }
@@ -1069,7 +1089,7 @@ ${result.signal.reason ?? result.analysis.reasoning}
 Risk:
 ${result.analysis.risk_warning || "Trading involves risk."}
 No trade signal issued.
-MT5 execution: DISABLED
+MT5 execution: strategy signals are queued for paired MT5 bridges
 `.trim());
         return;
       }
@@ -1171,7 +1191,7 @@ ${result.latestPrice?.candleTime ? `🕒 CANDLE: ${result.latestPrice.candleTime
 ${result.reason || "Market data is not ready. No trade signal issued."}
 ━━━━━━━━━━━━━━━━━━
 No BUY or SELL signal issued.
-MT5 EXECUTION: DISABLED
+MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
 🕒 Kampala time: ${checkedAt}
 SIR BOT AI
 `.trim();
@@ -1217,7 +1237,7 @@ ${signal?.reason || analysis?.reasoning || "No clear trading setup."}
 ${analysis?.risk_warning || "Trading involves risk. Wait for a clear setup."}
 ━━━━━━━━━━━━━━━━━━
 NO TRADE SIGNAL ISSUED.
-MT5 EXECUTION: DISABLED
+MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
 🕒 Kampala time: ${checkedAt}
 SIR BOT AI
 `.trim();
@@ -1238,21 +1258,29 @@ Exit: ${resolved.exitPrice}
 ${resolved.resolutionReason}
 Entry candle: ${resolved.candleTime}
 Resolved candle: ${resolved.resolutionCandle}
-MT5 execution: DISABLED
+MT5 execution: strategy signals are queued for paired MT5 bridges
 `.trim());
     }
 
-    const result = await runAnalysis(env, false);
-    if (result.success && result.signal && ["BUY", "SELL"].includes(result.signal.decision)) {
-      await recordSignalForTracking(env, result.signal);
-      const bridgeQueue = await enqueueMT5Signal(env, result.signal);
-      console.log("MT5 bridge queue:", JSON.stringify(bridgeQueue));
+    // Evaluate both profiles on every scheduled cycle. Each signal has a strategy-specific
+    // ID, so a NORMAL signal and a SCALPER signal from the same candle do not collide.
+    const results = await Promise.all([
+      runAnalysis(env, false, "NORMAL"),
+      runAnalysis(env, false, "AGGRESSIVE_SCALPER")
+    ]);
+    const strategyNames = ["NORMAL", "AGGRESSIVE_SCALPER"];
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.success && result.signal && ["BUY", "SELL"].includes(result.signal.decision)) {
+        await recordSignalForTracking(env, result.signal);
+        const bridgeQueue = await userQueueSignal(env, result.signal);
+        console.log(`MT5 ${strategyNames[i]} per-user bridge queue:`, JSON.stringify(bridgeQueue));
+      }
+      await sendTelegram(env, formatScheduledReport(result));
     }
-    const message = formatScheduledReport(result);
-    await sendTelegram(env, message);
-
-    console.log("SIR BOT scheduled Telegram report sent:", JSON.stringify({
-      success: result.success,
+    const result = results[0];
+    console.log("SIR BOT scheduled dual-strategy reports sent:", JSON.stringify({
+      strategies: strategyNames,
       decision: result.signal?.decision ?? result.decision,
       trackedSignalsChecked: tracking.checked,
       trackedSignalsResolved: tracking.resolved.length,
@@ -1266,7 +1294,7 @@ MT5 execution: DISABLED
 The automatic 5-minute analysis could not be completed.
 Reason: ${error.message}
 No trade signal issued.
-MT5 EXECUTION: DISABLED
+MT5 EXECUTION: BRIDGE QUEUE ENABLED (if paired and enabled)
 🕒 Kampala time: ${kampalaTime()}
 SIR BOT AI
 `.trim());
@@ -1337,6 +1365,97 @@ async function requireAdmin(request, env) {
   const user = await currentUser(request, env);
   return user && user.role === "admin" ? user : null;
 }
+// Multi-user MT5 bridge subsystem. Bridge tokens are stored only as SHA-256 hashes.
+async function ensureUserBridgeTables(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mt5_bridges (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+    label TEXT NOT NULL DEFAULT 'My MT5 terminal', status TEXT NOT NULL DEFAULT 'active',
+    symbol TEXT NOT NULL DEFAULT 'XAUUSDm', risk_percent REAL NOT NULL DEFAULT 0.25,
+    max_positions INTEGER NOT NULL DEFAULT 5, daily_loss_limit REAL NOT NULL DEFAULT 1,
+    execution_enabled INTEGER NOT NULL DEFAULT 1, demo_only INTEGER NOT NULL DEFAULT 0,
+    last_seen TEXT, created_at TEXT NOT NULL, revoked_at TEXT
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mt5_user_signal_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, bridge_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    signal_id TEXT NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('BUY','SELL')), entry REAL NOT NULL,
+    stop_loss REAL NOT NULL, tp1 REAL, tp2 REAL, tp3 REAL, confidence REAL,
+    setup_score REAL, candle_time TEXT, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING', claimed_at TEXT, acknowledged_at TEXT,
+    bridge_result TEXT, UNIQUE(bridge_id, signal_id)
+  )`).run();
+  // Backward-compatible migration for installations created before strategy-aware queues.
+  try { await env.DB.prepare(`ALTER TABLE mt5_user_signal_queue ADD COLUMN strategy TEXT NOT NULL DEFAULT 'NORMAL'`).run(); } catch (_) {}
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_mt5_user_queue ON mt5_user_signal_queue(bridge_id,status,expires_at,created_at)`).run();
+}
+async function bridgeForRequest(request, env) {
+  const token=(request.headers.get('Authorization')||'').replace(/^Bearer\s+/i,'').trim();
+  if(!token) return null;
+  const row=await env.DB.prepare(`SELECT b.*,u.status AS user_status FROM mt5_bridges b JOIN users u ON u.id=b.user_id WHERE b.token_hash=?`).bind(await sha256(token)).first();
+  if(!row || row.status!=='active' || row.user_status!=='active') return null;
+  await env.DB.prepare('UPDATE mt5_bridges SET last_seen=? WHERE id=?').bind(new Date().toISOString(),row.id).run();
+  return row;
+}
+async function userBridgeRoutes(request,env,path){
+  const user=await currentUser(request,env);
+  if(!user) return authResponse({error:'Sign in required.'},401);
+  await ensureUserBridgeTables(env);
+  if(path==='/mt5/pair' && request.method==='POST'){
+    const body=await jsonBody(request); const label=String(body.label||'My MT5 terminal').trim().slice(0,60)||'My MT5 terminal';
+    const id=crypto.randomUUID(), token=randomToken(), hash=await sha256(token), now=new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO mt5_bridges(id,user_id,token_hash,label,symbol,risk_percent,max_positions,daily_loss_limit,execution_enabled,demo_only,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(id,user.id,hash,label,'XAUUSDm',0.25,5,1,1,0,now).run();
+    return authResponse({success:true,bridge:{id,label,status:'active',symbol:'XAUUSDm',riskPercent:0.25,maxPositions:5,dailyLossLimit:1,executionEnabled:true,demoOnly:false},bridgeToken:token,warning:'MT5 execution is enabled for this connection. The local bridge supports verified DEMO and REAL MT5 accounts, detects the connected account mode, and enforces local position and risk limits.'},201);
+  }
+  if(path==='/mt5/bridges' && request.method==='GET'){
+    const rows=await env.DB.prepare(`SELECT id,label,status,symbol,risk_percent,max_positions,daily_loss_limit,execution_enabled,demo_only,last_seen,created_at FROM mt5_bridges WHERE user_id=? ORDER BY created_at DESC`).bind(user.id).all();
+    return authResponse({success:true,bridges:rows.results||[]});
+  }
+  const revoke=path.match(/^\/mt5\/bridges\/([a-f0-9-]+)\/revoke$/i);
+  if(revoke && request.method==='POST'){
+    const r=await env.DB.prepare(`UPDATE mt5_bridges SET status='revoked',revoked_at=?,execution_enabled=0 WHERE id=? AND user_id=?`).bind(new Date().toISOString(),revoke[1],user.id).run();
+    if(!(r.meta?.changes||0)) return authResponse({error:'Bridge not found.'},404);
+    await env.DB.prepare(`UPDATE mt5_user_signal_queue SET status='CANCELLED' WHERE bridge_id=? AND status IN ('PENDING','CLAIMED')`).bind(revoke[1]).run();
+    return authResponse({success:true,message:'Bridge revoked.'});
+  }
+  return null;
+}
+async function userQueueSignal(env,signal){
+  await ensureUserBridgeTables(env);
+  const rows=await env.DB.prepare(`SELECT b.id,b.user_id FROM mt5_bridges b JOIN users u ON u.id=b.user_id WHERE b.status='active' AND u.status='active'`).all();
+  const strategy=String(signal.strategy||'NORMAL').toUpperCase()==='AGGRESSIVE_SCALPER'?'AGGRESSIVE_SCALPER':'NORMAL';
+  const now=new Date(), expires=new Date(now.getTime()+5*60*1000), sid=await sha256([strategy,signal.symbol||SYMBOL,signal.timeframe||'M5',signal.candleTime,signal.decision].join('|'));
+  let queued=0;
+  for(const b of (rows.results||[])){
+    const r=await env.DB.prepare(`INSERT INTO mt5_user_signal_queue(bridge_id,user_id,signal_id,symbol,timeframe,decision,entry,stop_loss,tp1,tp2,tp3,confidence,setup_score,candle_time,created_at,expires_at,strategy)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(bridge_id,signal_id) DO NOTHING`).bind(b.id,b.user_id,sid,signal.symbol||SYMBOL,signal.timeframe||'M5',signal.decision,signal.entry,signal.stopLoss,signal.tp1,signal.tp2,signal.tp3,signal.confidence,signal.setupScore,signal.candleTime,now.toISOString(),expires.toISOString(),strategy).run();
+    queued+=(r.meta?.changes||0);
+  }
+  return {queued,bridges:(rows.results||[]).length,signalId:sid};
+}
+async function mt5BridgeRoutes(request,env,path){
+  await ensureUserBridgeTables(env);
+  const bridge=await bridgeForRequest(request,env);
+  if(!bridge) return response({error:'Invalid, revoked, or inactive bridge token.'},401);
+  if(path==='/mt5/next-signal' && request.method==='GET'){
+    const now=new Date().toISOString();
+    await env.DB.prepare(`UPDATE mt5_user_signal_queue SET status='EXPIRED' WHERE bridge_id=? AND status='PENDING' AND expires_at<=?`).bind(bridge.id,now).run();
+    // Reclaim stale leases after 90 seconds if the bridge crashed before acknowledging.
+    await env.DB.prepare(`UPDATE mt5_user_signal_queue SET status='PENDING',claimed_at=NULL WHERE bridge_id=? AND status='CLAIMED' AND claimed_at < ?`).bind(bridge.id,new Date(Date.now()-90000).toISOString()).run();
+    const row=await env.DB.prepare(`UPDATE mt5_user_signal_queue SET status='CLAIMED',claimed_at=? WHERE id=(SELECT id FROM mt5_user_signal_queue WHERE bridge_id=? AND status='PENDING' AND expires_at>? ORDER BY created_at LIMIT 1) AND status='PENDING' RETURNING *`).bind(now,bridge.id,now).first();
+    if(!row) return response({success:true,signal:null,execution:{enabled:false,demoOnly:true}});
+    return response({success:true,signal:{signalId:row.signal_id,symbol:row.symbol,timeframe:row.timeframe,strategy:row.strategy||'NORMAL',decision:row.decision,entry:row.entry,stopLoss:row.stop_loss,tp1:row.tp1,tp2:row.tp2,tp3:row.tp3,confidence:row.confidence,setupScore:row.setup_score,candleTime:row.candle_time,expiresAt:row.expires_at},execution:{enabled:Boolean(bridge.execution_enabled),demoOnly:Boolean(bridge.demo_only),symbol:bridge.symbol,riskPercent:bridge.risk_percent,maxPositions:bridge.max_positions,dailyLossLimit:bridge.daily_loss_limit}});
+  }
+  if(path==='/mt5/ack-signal' && request.method==='POST'){
+    const body=await jsonBody(request), sid=String(body.signalId||''), result=String(body.result||'').toUpperCase();
+    if(!/^[a-f0-9]{64}$/i.test(sid)||!['RECEIVED','REJECTED','EXECUTED','DUPLICATE'].includes(result)) return response({error:'Invalid signalId or result.'},400);
+    const r=await env.DB.prepare(`UPDATE mt5_user_signal_queue SET status='ACKNOWLEDGED',acknowledged_at=?,bridge_result=? WHERE bridge_id=? AND signal_id=? AND status='CLAIMED' RETURNING signal_id`).bind(new Date().toISOString(),result,bridge.id,sid).first();
+    if(!r) return response({success:true,idempotent:true,message:'Already acknowledged, expired, or not claimed.'});
+    return response({success:true,signalId:sid,result});
+  }
+  if(path==='/mt5/heartbeat' && request.method==='POST') return response({success:true,bridgeId:bridge.id,serverTime:new Date().toISOString()});
+  return response({error:'Bridge route not found.'},404);
+}
+
 async function authRoutes(request, env, path) {
   if (!env.DB) return authResponse({ error: "D1 binding DB is not configured." }, 500);
 
@@ -1352,9 +1471,9 @@ async function authRoutes(request, env, path) {
     if (existing) return authResponse({ error: "An account with this email already exists." }, 409);
     const id = crypto.randomUUID();
     const h = await passwordHash(password);
-    await env.DB.prepare("INSERT INTO users (id,name,email,password_hash,status,role) VALUES (?,?,?,?, 'pending','user')")
+    await env.DB.prepare("INSERT INTO users (id,name,email,password_hash,status,role) VALUES (?,?,?,?, 'active','user')")
       .bind(id, name, email, `${h.salt}:${h.hash}`).run();
-    return authResponse({ success: true, status: "pending", message: "Registration received. Your account is waiting for admin activation." }, 201);
+    return authResponse({ success: true, status: "active", message: "Account created. You can now sign in." }, 201);
   }
 
   if (path === "/auth/login" && request.method === "POST") {
@@ -1442,17 +1561,13 @@ export default {
     if (request.method === "OPTIONS") return cors();
 
     try {
-      if (path === "/mt5/next-signal") {
-        if (request.method !== "GET") return response({ error: "GET method required." }, 405);
-        if (!mt5BridgeAuthorized(request, env)) return response({ error: "Unauthorized." }, 401);
-        return response(await mt5NextSignal(env));
+      if (path === "/mt5/next-signal" || path === "/mt5/ack-signal" || path === "/mt5/heartbeat") {
+        const bridgeResult = await mt5BridgeRoutes(request, env, path);
+        if (bridgeResult) return bridgeResult;
       }
-
-      if (path === "/mt5/ack-signal") {
-        if (request.method !== "POST") return response({ error: "POST method required." }, 405);
-        if (!mt5BridgeAuthorized(request, env)) return response({ error: "Unauthorized." }, 401);
-        const body = await jsonBody(request);
-        return await mt5AcknowledgeSignal(env, body);
+      if (path === "/mt5/pair" || path === "/mt5/bridges" || /^\/mt5\/bridges\//.test(path)) {
+        const bridgeResult = await userBridgeRoutes(request, env, path);
+        if (bridgeResult) return bridgeResult;
       }
 
       if (path.startsWith("/auth/") || path === "/admin/users" || path.startsWith("/admin/users/")) {
@@ -1529,7 +1644,7 @@ export default {
         return response({ success: true, ...report });
       }
 
-      if (path === "/analyze-live") return response(await runAnalysis(env, false));
+      if (path === "/analyze-live") return response(await runAnalysis(env, false, url.searchParams.get("strategy") || "NORMAL"));
 
       if (path === "/analyze-and-notify") {
         if (request.method !== "POST") return response({ error: "POST method required." }, 405);
