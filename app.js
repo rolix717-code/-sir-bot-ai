@@ -99,7 +99,15 @@ document.addEventListener("DOMContentLoaded", () => {
    }catch(e){$("aiReasoning").textContent="Analysis failed: "+e.message;}
    finally{b.disabled=false;b.textContent="✦ ANALYZE XAUUSD";}
  }
- if($("strategyMode"))$("strategyMode").addEventListener("change",()=>{$("strategyDescription").textContent=$("strategyMode").value==="AGGRESSIVE_SCALPER"?"Faster M5 momentum entries with M15 confirmation and H1 context. Both strategies are also evaluated automatically for MT5 execution.":"Normal mode uses M15/H1/H4 confirmation with M5 entry timing. Both strategies are also evaluated automatically for MT5 execution.";});
+ function syncStrategySelectors(source){
+   const value=source?.value||$("strategyMode")?.value||"NORMAL";
+   if($("strategyMode"))$("strategyMode").value=value;
+   if($("strategyModeOverview"))$("strategyModeOverview").value=value;
+   if($("strategyDescription"))$("strategyDescription").textContent=value==="AGGRESSIVE_SCALPER"?"Aggressive AI Scalper: faster M5 momentum/breakout analysis with M15 confirmation and H1 context.":"Normal AI Trader: selective setups using M5 entry timing with M15/H1/H4 confirmation.";
+ }
+ if($("strategyMode"))$("strategyMode").addEventListener("change",e=>syncStrategySelectors(e.target));
+ if($("strategyModeOverview"))$("strategyModeOverview").addEventListener("change",e=>syncStrategySelectors(e.target));
+ if($("openSelectedStrategy"))$("openSelectedStrategy").addEventListener("click",()=>{syncStrategySelectors($("strategyModeOverview"));openPage("intelligence");});
  $("refreshMarket").addEventListener("click",loadMarket);$("refreshIndicators").addEventListener("click",loadIndicators);$("analyzeButton").addEventListener("click",analyzeMarket);
  $("riskPct").addEventListener("input",e=>$("riskValue").textContent=e.target.value+"%");
 
