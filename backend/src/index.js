@@ -4,8 +4,8 @@ const TCHAVI_URL = "https://tchavi.com/api/v1/chat/completions";
 
 const SYMBOL = "XAUUSD";
 const TIMEFRAMES = ["M5", "M15", "H1", "H4"];
-const A_PLUS_MIN_SCORE = 78;
-const MIN_CONFIDENCE = 65;
+const A_PLUS_MIN_SCORE = 74;
+const MIN_CONFIDENCE = 64;
 const SIGNAL_TTL = 86400;
 const MAX_M5_AGE_MS = 20 * 60 * 1000;
 const ACCURACY_PREFIX = "accuracy:signal:";
@@ -425,14 +425,14 @@ function buildIntelligence(market) {
     if (volatilityOk) { points += 5; reasons.push("Volatility is within filter"); }
 
     const higherConflict = [h4, h1, m15].some(x => x.trend === opposite);
-    if (higherConflict) { points -= 20; reasons.push("Higher-timeframe conflict penalty"); }
+    if (higherConflict) { points -= 8; reasons.push("One higher timeframe conflicts; reduced score, not an automatic rejection"); }
     return { score: Math.max(0, Math.min(100, Math.round(points))), reasons, aligned, higherConflict };
   }
 
   const buy = score("BUY");
   const sell = score("SELL");
   const selected = buy.score >= sell.score ? { decision: "BUY", ...buy } : { decision: "SELL", ...sell };
-  return { trends, priceAction, buy, sell, ...selected, threshold: A_PLUS_MIN_SCORE };
+  return { trends, priceAction, buy, sell, ...selected, threshold: A_PLUS_MIN_SCORE, scoringNote: "Scores rank technical confluence; they are not probabilities of profit." };
 }
 
 // -------------------------
@@ -467,12 +467,12 @@ function validateAI(data) {
 function strategyProfile(value) {
   const strategy = String(value || "NORMAL").toUpperCase();
   if (strategy === "AGGRESSIVE_SCALPER") return {
-    id: strategy, label: "Aggressive AI Scalper", confidence: 62, score: 72,
+    id: strategy, label: "Aggressive AI Scalper", confidence: 58, score: 68,
     entryTimeframe: "M5", context: ["M15", "H1"],
     prompt: "Use a faster M5 momentum, breakout or pullback approach. M15 must support the direction; H1 is context rather than an absolute veto. Accept a sound setup when at least two independent evidence groups agree (trend/momentum, structure/liquidity, or price action). Avoid chasing extended candles and avoid entries when spread/volatility conditions are unsuitable. Do not manufacture trades."
   };
   return {
-    id: "NORMAL", label: "Normal AI Trader", confidence: 67, score: 78,
+    id: "NORMAL", label: "Normal AI Trader", confidence: 64, score: 74,
     entryTimeframe: "M5", context: ["M15", "H1", "H4"],
     prompt: "Use a balanced multi-timeframe approach. M15 should confirm the trade direction and at least one of H1 or H4 should agree; the remaining higher timeframe is context, not an automatic veto. M5 is used for entry timing. Prefer at least two independent evidence groups (trend/momentum, structure/liquidity, or price action). Wait when M15 conflicts or evidence is weak."
   };
@@ -589,7 +589,7 @@ Return ONLY JSON:
 Decision: BUY, SELL, or WAIT.
 Trend: BULLISH, BEARISH, or SIDEWAYS.
 Confidence: number from 0 to 100.
-Do not require all four timeframes to point in the same direction. For Normal AI Trader, M15 and at least one of H1/H4 should agree. For Aggressive AI Scalper, M15 must confirm while H1 is contextual. Choose WAIT if M15 opposes the setup, market data is stale, or evidence is weak. Do not fabricate a high confidence score. The deterministic setup-score gate is ${profile.score}/100 for this profile.
+Do not require all four timeframes to point in the same direction. For Normal AI Trader, M15 and at least one of H1/H4 should agree. For Aggressive AI Scalper, M15 must confirm while H1 is contextual. Choose WAIT if M15 opposes the setup, market data is stale, or evidence is weak. Do not fabricate a high confidence score. The deterministic setup-score gate is ${profile.score}/100 for this profile. Prefer valid opportunities over excessive filtering, but choose WAIT whenever M15 conflicts, market data is stale, or at least two independent evidence groups do not support the setup.
 Confidence is not a guaranteed win probability.
 `;
 
@@ -658,7 +658,8 @@ function makeSignal(analysis, ind, profile = strategyProfile("NORMAL")) {
     tp2: Number(tp2.toFixed(3)),
     tp3: Number(tp3.toFixed(3)),
     confidence: analysis.confidence, setupScore: analysis.setupScore, trend: analysis.trend,
-    candleTime: ind.candleTime, reasoning: analysis.reasoning,
+    candleTime: ind.candleTime, reasoning: [analysis.reasoning, ...(analysis.intelligenceReasons || []).slice(0, 5).map(x => `• ${x}`)].filter(Boolean).join("\n"),
+    confluence: analysis.intelligenceReasons || [],
     riskWarning: analysis.risk_warning, status: "UNEXECUTED"
   };
 }
