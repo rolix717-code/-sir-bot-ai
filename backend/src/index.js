@@ -387,6 +387,8 @@ function advancedPriceAction(candles) {
 }
 
 function buildIntelligence(market) {
+  // Multi-family confluence engine. Each family is scored once to avoid
+  // counting several correlated indicators as independent evidence.
   const frames = ["H4", "H1", "M15", "M5"];
   const trends = Object.fromEntries(frames.map(tf => [tf, market[tf].indicators.trend]));
   const priceAction = Object.fromEntries(frames.map(tf => [tf, advancedPriceAction(market[tf].candles)]));
@@ -394,45 +396,91 @@ function buildIntelligence(market) {
   const m15 = market.M15.indicators;
   const h1 = market.H1.indicators;
   const h4 = market.H4.indicators;
+  const pa = priceAction.M5;
 
   function score(direction) {
+    const bullish = direction === "BUY";
+    const desiredTrend = bullish ? "BULLISH" : "BEARISH";
+    const oppositeTrend = bullish ? "BEARISH" : "BULLISH";
     let points = 0;
+    const confirmations = [];
     const reasons = [];
-    const opposite = direction === "BUY" ? "BEARISH" : "BULLISH";
-    const aligned = frames.filter(tf => trends[tf] === (direction === "BUY" ? "BULLISH" : "BEARISH")).length;
-    points += aligned * 12.5;
-    reasons.push(`${aligned}/4 timeframe trends aligned`);
+    const add = (family, weight, reason) => {
+      points += weight;
+      confirmations.push(family);
+      reasons.push(reason);
+    };
 
-    const rsiGood = direction === "BUY" ? m5.rsi >= 50 && m5.rsi <= 72 : m5.rsi <= 50 && m5.rsi >= 28;
-    if (rsiGood) { points += 10; reasons.push("M5 RSI supports momentum"); }
-    else reasons.push("M5 RSI is not in preferred momentum range");
+    // 1) Multi-timeframe trend / moving-average structure (maximum 25)
+    const aligned = frames.filter(tf => trends[tf] === desiredTrend).length;
+    const opposed = frames.filter(tf => trends[tf] === oppositeTrend).length;
+    if (aligned >= 3) add("Trend & EMA structure", aligned >= 4 ? 25 : 20, `${aligned}/4 timeframes show ${desiredTrend.toLowerCase()} EMA structure`);
+    else if (aligned === 2) add("Trend & EMA structure", 12, "Two timeframes align with the proposed direction");
+    if (opposed >= 2) { points -= 12; reasons.push(`${opposed} timeframes oppose the proposed direction`); }
 
-    const macdGood = direction === "BUY" ? m5.macd?.value > 0 : m5.macd?.value < 0;
-    if (macdGood) { points += 8; reasons.push("M5 MACD confirms direction"); }
+    // 2) Momentum: RSI and MACD are grouped as one family (maximum 15)
+    const rsiGood = bullish ? m5.rsi >= 50 && m5.rsi <= 70 : m5.rsi <= 50 && m5.rsi >= 30;
+    const macdGood = bullish ? Number(m5.macd?.value) > 0 : Number(m5.macd?.value) < 0;
+    if (rsiGood && macdGood) add("Momentum", 15, "M5 RSI and MACD support the same direction");
+    else if (rsiGood || macdGood) add("Momentum", 8, rsiGood ? "M5 RSI supports direction" : "M5 MACD supports direction");
 
-    const pa = priceAction.M5;
-    const sweepGood = direction === "BUY" ? pa.liquiditySweep === "BULLISH_SWEEP" : pa.liquiditySweep === "BEARISH_SWEEP";
-    const bosGood = direction === "BUY" ? pa.structureBreak === "BULLISH_BOS" : pa.structureBreak === "BEARISH_BOS";
-    const fvgGood = direction === "BUY" ? pa.fairValueGap === "BULLISH_FVG" : pa.fairValueGap === "BEARISH_FVG";
-    if (sweepGood) { points += 15; reasons.push("M5 liquidity sweep detected"); }
-    if (bosGood) { points += 15; reasons.push("M5 break of structure detected"); }
-    if (fvgGood) { points += 8; reasons.push("M5 fair value gap detected"); }
+    // 3) Structure and liquidity: BOS / sweep (maximum 20)
+    const sweepGood = bullish ? pa.liquiditySweep === "BULLISH_SWEEP" : pa.liquiditySweep === "BEARISH_SWEEP";
+    const bosGood = bullish ? pa.structureBreak === "BULLISH_BOS" : pa.structureBreak === "BEARISH_BOS";
+    if (sweepGood && bosGood) add("Structure & liquidity", 20, "Liquidity sweep and break of structure agree");
+    else if (sweepGood || bosGood) add("Structure & liquidity", 12, sweepGood ? "Directional liquidity sweep detected" : "Directional break of structure detected");
 
-    const correctZone = direction === "BUY" ? pa.zone === "DISCOUNT" : pa.zone === "PREMIUM";
-    if (correctZone) { points += 8; reasons.push(`Price is in ${pa.zone.toLowerCase()} zone`); }
+    // 4) ICT-style imbalance / FVG and approximate order-block context (maximum 15)
+    const fvgGood = bullish ? pa.fairValueGap === "BULLISH_FVG" : pa.fairValueGap === "BEARISH_FVG";
+    const orderBlock = bullish ? pa.bullishOrderBlock : pa.bearishOrderBlock;
+    const price = m5.price;
+    const inOrderBlock = Boolean(orderBlock && price >= orderBlock.low && price <= orderBlock.high);
+    if (fvgGood && inOrderBlock) add("FVG & order-block confluence", 15, "Directional fair-value gap and price within the approximate order-block zone");
+    else if (fvgGood || inOrderBlock) add("FVG & order-block confluence", 8, fvgGood ? "Directional fair-value gap detected" : "Price is testing the approximate directional order-block zone");
 
-    const volatilityOk = m5.atr && m5.atr > 0 && pa.candleRange <= m5.atr * 2.5;
-    if (volatilityOk) { points += 5; reasons.push("Volatility is within filter"); }
+    // 5) Premium/discount and range location (maximum 10)
+    const correctZone = bullish ? pa.zone === "DISCOUNT" : pa.zone === "PREMIUM";
+    if (correctZone) add("Range location", 10, `Price is in the ${pa.zone.toLowerCase()} half of the recent range`);
 
-    const higherConflict = [h4, h1, m15].some(x => x.trend === opposite);
-    if (higherConflict) { points -= 20; reasons.push("Higher-timeframe conflict penalty"); }
-    return { score: Math.max(0, Math.min(100, Math.round(points))), reasons, aligned, higherConflict };
+    // 6) Candle / breakout quality and volatility guard (maximum 10)
+    const candleDirectional = bullish ? m5.price > market.M5.candles.at(-1).open : m5.price < market.M5.candles.at(-1).open;
+    const volatilityOk = Number(m5.atr) > 0 && Number(pa.candleRange) <= Number(m5.atr) * 2.5;
+    const breakoutRetestContext = bullish
+      ? m5.price > pa.rangeHigh || (m5.price > pa.equilibrium && candleDirectional)
+      : m5.price < pa.rangeLow || (m5.price < pa.equilibrium && candleDirectional);
+    if (volatilityOk && candleDirectional && breakoutRetestContext) add("Price action & volatility", 10, "Directional candle and volatility conditions are acceptable");
+    else if (volatilityOk && candleDirectional) add("Price action & volatility", 5, "Directional candle with acceptable volatility");
+
+    const scoreValue = Math.max(0, Math.min(100, Math.round(points)));
+    return {
+      score: scoreValue,
+      reasons,
+      confirmations: [...new Set(confirmations)],
+      aligned,
+      opposed,
+      higherConflict: [h4, h1, m15].some(x => x.trend === oppositeTrend)
+    };
   }
 
   const buy = score("BUY");
   const sell = score("SELL");
   const selected = buy.score >= sell.score ? { decision: "BUY", ...buy } : { decision: "SELL", ...sell };
-  return { trends, priceAction, buy, sell, ...selected, threshold: A_PLUS_MIN_SCORE };
+  return {
+    trends,
+    priceAction,
+    buy,
+    sell,
+    ...selected,
+    strategyFamilies: [
+      "Multi-timeframe trend and EMA structure",
+      "RSI/MACD momentum",
+      "Market structure and liquidity sweeps",
+      "Fair value gaps and approximate order blocks",
+      "Premium/discount range location",
+      "Price action and volatility filters"
+    ],
+    threshold: A_PLUS_MIN_SCORE
+  };
 }
 
 // -------------------------
@@ -569,14 +617,14 @@ You are SIR BOT AI, a cautious XAUUSD market analysis assistant.
 Analyze the supplied H4, H1, M15 and M5 data for the ${profile.label} profile.
 ${profile.prompt}
 Consider:
-- Multi-timeframe trend alignment
-- EMA structure
-- RSI
-- MACD
-- ATR volatility
-- Support and resistance
-- Market structure
-- Possible liquidity sweeps and breakouts
+- Multi-timeframe trend alignment and EMA structure
+- RSI/MACD momentum confluence (treat correlated indicators as one evidence family)
+- ATR volatility and candle quality
+- Support/resistance and recent range location
+- Market structure, break of structure and liquidity sweeps
+- Fair value gaps and approximate order-block context
+- Breakout/retest conditions and premium/discount location
+- Do not count correlated indicators as separate independent confirmations
 Never invent prices or indicators.
 Return ONLY JSON:
 {
@@ -763,7 +811,8 @@ function formatSignal(signal) {
 ━━━━━━━━━━━━━━━━━━
 📈 TREND: ${signal.trend}
 🧠 AI SCORE: ${signal.confidence}/100
-🏆 A+ SETUP SCORE: ${signal.setupScore ?? "N/A"}/100
+🏆 CONFLUENCE SCORE: ${signal.setupScore ?? "N/A"}/100
+🧩 CONFIRMED FAMILIES: ${(signal.strategyConfirmations || []).join(", ") || "Not supplied"}
 🕒 CANDLE: ${signal.candleTime}
 📝 ANALYSIS:
 ${signal.reasoning}
@@ -1079,6 +1128,11 @@ async function runAnalysis(env, notify = false, requestedStrategy = "NORMAL") {
   analysis.setupDirection = intelligence.decision;
   analysis.intelligenceReasons = intelligence.reasons;
   let signal = makeSignal(analysis, market.M5.indicators, profile);
+  if (signal.decision !== "WAIT") {
+    signal.strategyConfirmations = intelligence.confirmations || [];
+    signal.strategyFamiliesChecked = intelligence.strategyFamilies || [];
+    signal.setupReasons = intelligence.reasons || [];
+  }
 
   if (signal.decision !== "WAIT") {
     const aligned = profile.id === "AGGRESSIVE_SCALPER"
