@@ -61,7 +61,13 @@ document.addEventListener("DOMContentLoaded", () => {
  }
  navItems.forEach(n=>n.addEventListener("click",()=>openPage(n.dataset.page)));
  document.querySelectorAll("[data-open]").forEach(b=>b.addEventListener("click",()=>openPage(b.dataset.open)));
- $("menuBtn").addEventListener("click",()=>sidebar.classList.toggle("open"));
+ $("menuBtn").addEventListener("click",e=>{e.stopPropagation();sidebar.classList.toggle("open");});
+ // Close the mobile drawer when the user taps anywhere outside it.
+ document.addEventListener("pointerdown",e=>{
+   if(!sidebar.classList.contains("open"))return;
+   if(sidebar.contains(e.target)||$("menuBtn").contains(e.target))return;
+   sidebar.classList.remove("open");
+ });
  async function api(path,timeoutMs=30000){
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
    try{return await request(path,{signal:controller.signal});}finally{clearTimeout(timer);}
