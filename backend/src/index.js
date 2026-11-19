@@ -894,7 +894,9 @@ async function monitorPendingSignals(env) {
           : "Stop loss reached.";
         record.resolutionCandle = candle.time;
         record.resolvedAt = new Date().toISOString();
-        events.push({ ...record, eventType: "SL" });
+        const slEvent = { ...record, eventType: "SL" };
+        events.push(slEvent);
+        record.pendingNotifications = [...(record.pendingNotifications || []), slEvent];
         changed = true;
         break;
       }
@@ -905,7 +907,9 @@ async function monitorPendingSignals(env) {
         record.lastHitTarget = targetNumber;
         record.lastHitPrice = Number(record[targetName]);
         record.lastHitAt = new Date().toISOString();
-        events.push({ ...record, eventType: targetNumber, exitPrice: record.lastHitPrice });
+        const targetEvent = { ...record, eventType: targetNumber, exitPrice: record.lastHitPrice };
+        events.push(targetEvent);
+        record.pendingNotifications = [...(record.pendingNotifications || []), targetEvent];
         changed = true;
         if (targetName === "tp3") {
           record.status = "RESOLVED";
@@ -1291,6 +1295,28 @@ async function scheduledAnalysis(env) {
       checked: tracking.checked,
       events: tracking.events.length
     }));
+
+    // Retry undelivered TP/SL notifications on later cron runs. Keep each
+    // event until Telegram confirms delivery so temporary outages don't lose it.
+    const notificationRecords = await listAccuracyRecords(env);
+    for (const tracked of notificationRecords) {
+      const queued = tracked.pendingNotifications || [];
+      if (!queued.length) continue;
+      const remaining = [];
+      for (const event of queued) {
+        try {
+          await sendTelegram(env, formatOutcomeReport(event));
+        } catch (telegramError) {
+          console.error("Telegram TP/SL outcome report failed; will retry:", telegramError.message);
+          remaining.push(event);
+        }
+      }
+      if (remaining.length !== queued.length) {
+        tracked.pendingNotifications = remaining;
+        const key = ACCURACY_PREFIX + encodeURIComponent(tracked.id);
+        await env.SIGNAL_DEDUPE.put(key, JSON.stringify(tracked), { expirationTtl: ACCURACY_TTL });
+      }
+    }
 
     const results = await Promise.all([
       runAnalysis(env, false, "NORMAL"),
