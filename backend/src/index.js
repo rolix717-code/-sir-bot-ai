@@ -467,9 +467,9 @@ function validateAI(data) {
 function strategyProfile(value) {
   const strategy = String(value || "NORMAL").toUpperCase();
   if (strategy === "AGGRESSIVE_SCALPER") return {
-    id: strategy, label: "Aggressive AI Scalper", confidence: 58, score: 68,
+    id: strategy, label: "Aggressive AI Scalper", confidence: 52, score: 58,
     entryTimeframe: "M5", context: ["M15", "H1"],
-    prompt: "Use a faster M5 momentum, breakout or pullback approach. M15 must support the direction; H1 is context rather than an absolute veto. Accept a sound setup when at least two independent evidence groups agree (trend/momentum, structure/liquidity, or price action). Avoid chasing extended candles and avoid entries when spread/volatility conditions are unsuitable. Do not manufacture trades."
+    prompt: "Prioritise more frequent M5 momentum, breakout and pullback opportunities. M15 may be aligned or neutral; reject a setup when M15 clearly opposes it. H1 is context, not a veto. Require at least two independent evidence groups (trend/momentum, structure/liquidity, or price action). Avoid chasing extended candles and reject unsuitable volatility or unreliable data. Never manufacture trades."
   };
   return {
     id: "NORMAL", label: "Normal AI Trader", confidence: 64, score: 74,
@@ -1082,8 +1082,13 @@ async function runAnalysis(env, notify = false, requestedStrategy = "NORMAL") {
   const m15Trend = market.M15.indicators.trend;
   const m15Confirms = (direction === "BUY" && m15Trend === "BULLISH") ||
     (direction === "SELL" && m15Trend === "BEARISH");
+  const m15Opposes = (direction === "BUY" && m15Trend === "BEARISH") ||
+    (direction === "SELL" && m15Trend === "BULLISH");
   const minimumScore = profile.score;
-  const qualified = score >= minimumScore && m15Confirms;
+  // Aggressive mode may take an M5 setup while M15 is neutral, but never
+  // when M15 clearly points the other way. Normal mode still requires alignment.
+  const timeframeAllowed = profile.id === "AGGRESSIVE_SCALPER" ? !m15Opposes : m15Confirms;
+  const qualified = score >= minimumScore && timeframeAllowed;
   const analysis = {
     decision: qualified ? direction : "WAIT",
     trend: direction === "BUY" ? "BULLISH" : direction === "SELL" ? "BEARISH" : "SIDEWAYS",
@@ -1093,14 +1098,17 @@ async function runAnalysis(env, notify = false, requestedStrategy = "NORMAL") {
     intelligenceReasons: (direction === "BUY" ? intelligence.buy.reasons : intelligence.sell.reasons),
     reasoning: qualified
       ? `${profile.label}: ${direction} setup passed the deterministic confluence filter. ${intelligence.reasons.join("; ")}`
-      : `No qualifying setup. Best ${direction} score: ${score}/100; required: ${minimumScore}/100. M15 confirmation: ${m15Confirms ? "yes" : "no"}.`,
+      : `No qualifying setup. Best ${direction} score: ${score}/100; required: ${minimumScore}/100. M15 trend: ${m15Trend}; ${profile.id === "AGGRESSIVE_SCALPER" ? "opposing M15 trend blocks the setup" : "M15 alignment is required"}.`,
     risk_warning: "Technical-rule analysis only. Scores are not probabilities of profit. Verify spread, execution conditions and risk before trading."
   };
   let signal = makeSignal(analysis, market.M5.indicators, profile);
 
   if (signal.decision !== "WAIT") {
+    const m15Direction = market.M15.indicators.trend;
+    const m15OpposesSignal = (signal.decision === "BUY" && m15Direction === "BEARISH") ||
+      (signal.decision === "SELL" && m15Direction === "BULLISH");
     const aligned = profile.id === "AGGRESSIVE_SCALPER"
-      ? ((signal.decision === "BUY" && market.M15.indicators.trend === "BULLISH") || (signal.decision === "SELL" && market.M15.indicators.trend === "BEARISH"))
+      ? !m15OpposesSignal
       : higherTimeframesAgree(signal.decision, market);
     if (!aligned) signal = { decision: "WAIT", strategy: profile.id, reason: profile.id === "AGGRESSIVE_SCALPER" ? "M15 momentum does not confirm the M5 entry." : "M15, H1 and H4 do not confirm the M5 direction." };
   }
