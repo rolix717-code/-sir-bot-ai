@@ -354,6 +354,22 @@ function advancedPriceAction(candles) {
   const bullishBOS = last.close > rangeHigh;
   const bearishBOS = last.close < rangeLow;
 
+  // Detect a recent breakout followed by a controlled retest using completed candles.
+  const priorWindow = recent.slice(-7, -1);
+  const earlierWindow = recent.slice(-27, -7);
+  const priorHigh = earlierWindow.length ? Math.max(...earlierWindow.map(c => c.high)) : rangeHigh;
+  const priorLow = earlierWindow.length ? Math.min(...earlierWindow.map(c => c.low)) : rangeLow;
+  const recentBullBreak = priorWindow.some(c => c.close > priorHigh);
+  const recentBearBreak = priorWindow.some(c => c.close < priorLow);
+  const tolerance = Math.max((last.high - last.low) * 0.35, 0.15 * (atr(recent) || 0));
+  const bullishBreakoutRetest = recentBullBreak && last.low <= priorHigh + tolerance && last.close > priorHigh && last.close >= last.open;
+  const bearishBreakoutRetest = recentBearBreak && last.high >= priorLow - tolerance && last.close < priorLow && last.close <= last.open;
+
+  const fastEma = ema(recent.map(c => c.close), 20);
+  const lastRange = Math.max(0, last.high - last.low);
+  const bullishPullback = fastEma !== null && last.low <= fastEma + tolerance && last.close > fastEma && last.close >= last.open && lastRange <= (atr(recent) || Infinity) * 1.8;
+  const bearishPullback = fastEma !== null && last.high >= fastEma - tolerance && last.close < fastEma && last.close <= last.open && lastRange <= (atr(recent) || Infinity) * 1.8;
+
   const a = recent.at(-3), b = recent.at(-2), c = last;
   const bullishFVG = a.high < c.low;
   const bearishFVG = a.low > c.high;
@@ -380,6 +396,7 @@ function advancedPriceAction(candles) {
     liquiditySweep: bullishSweep ? "BULLISH_SWEEP" : bearishSweep ? "BEARISH_SWEEP" : "NONE",
     structureBreak: bullishBOS ? "BULLISH_BOS" : bearishBOS ? "BEARISH_BOS" : "NO_CONFIRMED_BOS",
     fairValueGap: bullishFVG ? "BULLISH_FVG" : bearishFVG ? "BEARISH_FVG" : "NONE",
+    bullishBreakoutRetest, bearishBreakoutRetest, bullishPullback, bearishPullback,
     bullishOrderBlock, bearishOrderBlock,
     candleBody: Math.abs(last.close - last.open),
     candleRange: last.high - last.low
@@ -417,6 +434,12 @@ function buildIntelligence(market) {
     if (sweepGood) { points += 15; reasons.push("M5 liquidity sweep detected"); }
     if (bosGood) { points += 15; reasons.push("M5 break of structure detected"); }
     if (fvgGood) { points += 8; reasons.push("M5 fair value gap detected"); }
+    const obGood = direction === "BUY" ? Boolean(pa.bullishOrderBlock) : Boolean(pa.bearishOrderBlock);
+    if (obGood) { points += 7; reasons.push("M5 displacement/order-block evidence detected"); }
+    const retestGood = direction === "BUY" ? pa.bullishBreakoutRetest : pa.bearishBreakoutRetest;
+    if (retestGood) { points += 14; reasons.push("M5 breakout-and-retest detected"); }
+    const pullbackGood = direction === "BUY" ? pa.bullishPullback : pa.bearishPullback;
+    if (pullbackGood) { points += 10; reasons.push("M5 EMA pullback with directional close detected"); }
 
     const correctZone = direction === "BUY" ? pa.zone === "DISCOUNT" : pa.zone === "PREMIUM";
     if (correctZone) { points += 8; reasons.push(`Price is in ${pa.zone.toLowerCase()} zone`); }
@@ -426,7 +449,11 @@ function buildIntelligence(market) {
 
     const higherConflict = [h4, h1, m15].some(x => x.trend === opposite);
     if (higherConflict) { points -= 8; reasons.push("One higher timeframe conflicts; reduced score, not an automatic rejection"); }
-    return { score: Math.max(0, Math.min(100, Math.round(points))), reasons, aligned, higherConflict };
+    const momentumEvidence = Number(rsiGood) + Number(macdGood);
+    const structureEvidence = Number(sweepGood) + Number(bosGood) + Number(fvgGood) + Number(obGood);
+    const priceActionEvidence = Number(retestGood) + Number(pullbackGood);
+    const evidenceGroups = Number(momentumEvidence > 0) + Number(structureEvidence > 0) + Number(priceActionEvidence > 0);
+    return { score: Math.max(0, Math.min(100, Math.round(points))), reasons, aligned, higherConflict, evidenceGroups, momentumEvidence, structureEvidence, priceActionEvidence };
   }
 
   const buy = score("BUY");
@@ -1087,8 +1114,14 @@ async function runAnalysis(env, notify = false, requestedStrategy = "NORMAL") {
   const minimumScore = profile.score;
   // Aggressive mode may take an M5 setup while M15 is neutral, but never
   // when M15 clearly points the other way. Normal mode still requires alignment.
-  const timeframeAllowed = profile.id === "AGGRESSIVE_SCALPER" ? !m15Opposes : m15Confirms;
-  const qualified = score >= minimumScore && timeframeAllowed;
+  const selectedEvidenceGroups = (direction === "BUY" ? intelligence.buy : intelligence.sell).evidenceGroups || 0;
+  // Aggressive mode may trade a supported M5 setup when M15 is sideways.
+  // It still rejects a clearly opposing M15 trend and requires two evidence groups.
+  const timeframeAllowed = profile.id === "AGGRESSIVE_SCALPER"
+    ? (!m15Opposes && (m15Confirms || (m15Trend === "SIDEWAYS" && selectedEvidenceGroups >= 2)))
+    : m15Confirms;
+  const qualified = score >= minimumScore && timeframeAllowed &&
+    (profile.id !== "AGGRESSIVE_SCALPER" || selectedEvidenceGroups >= 2);
   const analysis = {
     decision: qualified ? direction : "WAIT",
     trend: direction === "BUY" ? "BULLISH" : direction === "SELL" ? "BEARISH" : "SIDEWAYS",
@@ -1098,7 +1131,7 @@ async function runAnalysis(env, notify = false, requestedStrategy = "NORMAL") {
     intelligenceReasons: (direction === "BUY" ? intelligence.buy.reasons : intelligence.sell.reasons),
     reasoning: qualified
       ? `${profile.label}: ${direction} setup passed the deterministic confluence filter. ${intelligence.reasons.join("; ")}`
-      : `No qualifying setup. Best ${direction} score: ${score}/100; required: ${minimumScore}/100. M15 trend: ${m15Trend}; ${profile.id === "AGGRESSIVE_SCALPER" ? "opposing M15 trend blocks the setup" : "M15 alignment is required"}.`,
+      : `No qualifying setup. Best ${direction} score: ${score}/100; required: ${minimumScore}/100. M15 trend: ${m15Trend}; evidence groups: ${selectedEvidenceGroups}/3. ${profile.id === "AGGRESSIVE_SCALPER" ? "M15 opposition or fewer than two independent evidence groups blocks the setup" : "M15 alignment is required"}.`,
     risk_warning: "Technical-rule analysis only. Scores are not probabilities of profit. Verify spread, execution conditions and risk before trading."
   };
   let signal = makeSignal(analysis, market.M5.indicators, profile);
