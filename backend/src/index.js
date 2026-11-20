@@ -598,10 +598,9 @@ Confidence is not a guaranteed win probability.
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.TCHAVI_API_KEY}` },
     body: JSON.stringify({
       model: "gpt-4o-mini",
-      temperature: 0.1,
-      max_tokens: 180,
+      temperature: 0.2,
       messages: [
-        { role: "system", content: system + "\\nKeep reasoning concise (maximum 2 short sentences). Return only the required compact JSON." },
+        { role: "system", content: system },
         { role: "user", content: JSON.stringify(market) }
       ]
     }),
@@ -1035,7 +1034,7 @@ function aiInput(market) {
   for (const tf of TIMEFRAMES) {
     data[tf] = {
       indicators: market[tf].indicators,
-      candles: market[tf].candles.slice(-40).map(c => ({
+      candles: market[tf].candles.slice(-100).map(c => ({
         time: c.time, open: c.open, high: c.high,
         low: c.low, close: c.close, volume: c.volume
       }))
@@ -1075,11 +1074,28 @@ async function runAnalysis(env, notify = false, requestedStrategy = "NORMAL") {
     };
   }
 
+  // Token-free deterministic decision engine. Cloudflare calculates the
+  // technical confluence locally; Tchavi is not called for routine signals.
   const intelligence = buildIntelligence(market);
-  const analysis = await analyzeAI({ ...aiInput(market), strategy: profile.id, deterministicIntelligence: intelligence }, env, profile);
-  analysis.setupScore = intelligence.score;
-  analysis.setupDirection = intelligence.decision;
-  analysis.intelligenceReasons = intelligence.reasons;
+  const direction = intelligence.decision;
+  const score = direction === "BUY" ? intelligence.buy.score : intelligence.sell.score;
+  const m15Trend = market.M15.indicators.trend;
+  const m15Confirms = (direction === "BUY" && m15Trend === "BULLISH") ||
+    (direction === "SELL" && m15Trend === "BEARISH");
+  const minimumScore = profile.score;
+  const qualified = score >= minimumScore && m15Confirms;
+  const analysis = {
+    decision: qualified ? direction : "WAIT",
+    trend: direction === "BUY" ? "BULLISH" : direction === "SELL" ? "BEARISH" : "SIDEWAYS",
+    confidence: score,
+    setupScore: score,
+    setupDirection: direction,
+    intelligenceReasons: (direction === "BUY" ? intelligence.buy.reasons : intelligence.sell.reasons),
+    reasoning: qualified
+      ? `${profile.label}: ${direction} setup passed the deterministic confluence filter. ${intelligence.reasons.join("; ")}`
+      : `No qualifying setup. Best ${direction} score: ${score}/100; required: ${minimumScore}/100. M15 confirmation: ${m15Confirms ? "yes" : "no"}.`,
+    risk_warning: "Technical-rule analysis only. Scores are not probabilities of profit. Verify spread, execution conditions and risk before trading."
+  };
   let signal = makeSignal(analysis, market.M5.indicators, profile);
 
   if (signal.decision !== "WAIT") {
@@ -1287,77 +1303,6 @@ function kampalaTime() {
   });
 }
 
-
-// One active XAUUSD signal across BOTH Normal and Aggressive strategies.
-// D1 primary-key uniqueness makes acquisition safe if cron invocations overlap.
-async function ensureActiveSignalLockTable(env) {
-  if (!env.DB) throw new Error("D1 binding DB is required for the XAUUSD active-signal lock.");
-  await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS xauusd_active_signal (
-      symbol TEXT PRIMARY KEY,
-      signal_id TEXT NOT NULL,
-      decision TEXT NOT NULL CHECK(decision IN ('BUY','SELL')),
-      strategy TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    )
-  `).run();
-}
-
-async function getActiveSignalLock(env) {
-  await ensureActiveSignalLockTable(env);
-  return await env.DB.prepare(
-    "SELECT symbol, signal_id, decision, strategy, created_at FROM xauusd_active_signal WHERE symbol=?"
-  ).bind(SYMBOL).first();
-}
-
-async function acquireActiveSignalLock(env, signal) {
-  await ensureActiveSignalLockTable(env);
-  const signalId = `${signal.strategy || "NORMAL"}:${signal.candleTime}:${signal.decision}`;
-  const result = await env.DB.prepare(`
-    INSERT INTO xauusd_active_signal (symbol, signal_id, decision, strategy, created_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(symbol) DO NOTHING
-  `).bind(SYMBOL, signalId, signal.decision, signal.strategy || "NORMAL", new Date().toISOString()).run();
-  return { acquired: (result.meta?.changes || 0) > 0, signalId };
-}
-
-async function releaseActiveSignalLock(env, signalId = null) {
-  await ensureActiveSignalLockTable(env);
-  if (signalId) {
-    await env.DB.prepare("DELETE FROM xauusd_active_signal WHERE symbol=? AND signal_id=?")
-      .bind(SYMBOL, signalId).run();
-  } else {
-    await env.DB.prepare("DELETE FROM xauusd_active_signal WHERE symbol=?")
-      .bind(SYMBOL).run();
-  }
-}
-
-async function reconcileActiveSignalLock(env) {
-  let lock = await getActiveSignalLock(env);
-  const records = await listAccuracyRecords(env);
-  if (!lock) {
-    // Adopt an already-running XAUUSD signal from earlier deployments so the
-    // new one-at-a-time rule does not accidentally overlap it.
-    const existingPending = records.find(r => r.symbol === SYMBOL && r.status === "PENDING");
-    if (existingPending) {
-      await env.DB.prepare(`
-        INSERT INTO xauusd_active_signal (symbol, signal_id, decision, strategy, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(symbol) DO NOTHING
-      `).bind(SYMBOL, existingPending.id, existingPending.decision, existingPending.strategy || "NORMAL", existingPending.createdAt || new Date().toISOString()).run();
-      lock = await getActiveSignalLock(env);
-    }
-  }
-  if (!lock) return null;
-  const tracked = records.find(r => r.id === lock.signal_id);
-  // If the signal was resolved by TP3/SL, free XAUUSD for the next setup.
-  if (!tracked || tracked.status !== "PENDING") {
-    await releaseActiveSignalLock(env, lock.signal_id);
-    return null;
-  }
-  return lock;
-}
-
 async function scheduledAnalysis(env) {
   // Telegram broadcast policy: send valid BUY/SELL signals and each TP1/TP2/TP3/SL
   // BUY/SELL signal messages only. WAIT decisions, TP/SL reports, market summaries,
@@ -1368,7 +1313,6 @@ async function scheduledAnalysis(env) {
       checked: tracking.checked,
       events: tracking.events.length
     }));
-    await reconcileActiveSignalLock(env);
 
     // Retry undelivered TP/SL notifications on later cron runs. Keep each
     // event until Telegram confirms delivery so temporary outages don't lose it.
@@ -1392,9 +1336,15 @@ async function scheduledAnalysis(env) {
       }
     }
 
-    const active = await reconcileActiveSignalLock(env);
-    if (active) {
-      console.log("XAUUSD signal generation paused: an active signal is still running.", JSON.stringify(active));
+    // One active XAUUSD signal is shared by Normal and Aggressive strategies.
+    // TP1/TP2 do not release the lock; only confirmed TP3 or SL resolution does.
+    const activeRecords = await listAccuracyRecords(env);
+    const activeSignal = activeRecords.find(r => r.symbol === SYMBOL && r.status === "PENDING");
+    if (activeSignal) {
+      console.log("SIR BOT signal generation paused: an XAUUSD signal is still active.", JSON.stringify({
+        id: activeSignal.id, decision: activeSignal.decision, strategy: activeSignal.strategy,
+        hitTargets: activeSignal.hitTargets || []
+      }));
       return;
     }
 
@@ -1402,33 +1352,21 @@ async function scheduledAnalysis(env) {
       runAnalysis(env, false, "NORMAL"),
       runAnalysis(env, false, "AGGRESSIVE_SCALPER")
     ]);
-
-    // Both profiles may find setups, but only the strongest eligible candidate
-    // can be published. They share one symbol-wide active-signal lock.
     const candidates = results
-      .filter(r => r.success && ["BUY", "SELL"].includes(r.signal?.decision))
-      .map(r => r.signal)
-      .sort((a, b) => (b.setupScore || 0) - (a.setupScore || 0) || (b.confidence || 0) - (a.confidence || 0));
-
-    let broadcasts = [];
-    const candidate = candidates[0];
-    if (candidate) {
-      const lock = await acquireActiveSignalLock(env, candidate);
-      if (!lock.acquired) {
-        console.log("XAUUSD signal suppressed: another invocation acquired the active-signal lock.");
-      } else {
-        try {
-          await recordSignalForTracking(env, candidate);
-          const sent = await sendUniqueSignal(env, candidate);
-          broadcasts = [{ strategy: candidate.strategy, decision: candidate.decision, ...sent }];
-        } catch (sendError) {
-          // Avoid leaving a permanent lock if Telegram delivery failed.
-          await releaseActiveSignalLock(env, lock.signalId);
-          throw sendError;
-        }
-      }
+      .filter(r => r.success && r.signal && ["BUY", "SELL"].includes(r.signal.decision))
+      .sort((a, b) => (b.signal.setupScore || 0) - (a.signal.setupScore || 0));
+    const broadcasts = [];
+    const selected = candidates[0];
+    if (selected) {
+      await recordSignalForTracking(env, selected.signal);
+      const sent = await sendUniqueSignal(env, selected.signal);
+      broadcasts.push({ strategy: selected.signal.strategy, decision: selected.signal.decision, ...sent });
     } else {
-      console.log("Telegram skipped: neither strategy produced an eligible BUY/SELL signal.");
+      console.log("SIR BOT scheduled scan: no qualifying XAUUSD setup.", JSON.stringify(results.map(r => ({
+        strategy: r.strategy?.id || r.signal?.strategy || "UNKNOWN",
+        decision: r.signal?.decision || "NO_SIGNAL",
+        reason: r.signal?.reason || r.reason || "Analysis unavailable"
+      }))));
     }
 
     console.log("SIR BOT scheduled signal-only cycle:", JSON.stringify({
@@ -1803,7 +1741,14 @@ export default {
       if (path === "/analyze-and-notify") {
         if (request.method !== "POST") return response({ error: "POST method required." }, 405);
         if (!authorized(request, env)) return response({ error: "Unauthorized." }, 401);
-        return response(await runAnalysis(env, true));
+        const active = (await listAccuracyRecords(env)).find(r => r.symbol === SYMBOL && r.status === "PENDING");
+        if (active) return response({ success: false, error: "An XAUUSD signal is already active. Wait until TP3 or SL is confirmed.", activeSignal: { decision: active.decision, strategy: active.strategy, hitTargets: active.hitTargets || [] } }, 409);
+        const result = await runAnalysis(env, false, "NORMAL");
+        if (result.success && result.signal && ["BUY", "SELL"].includes(result.signal.decision)) {
+          await recordSignalForTracking(env, result.signal);
+          result.telegram = await sendUniqueSignal(env, result.signal);
+        }
+        return response(result);
       }
 
       if (path === "/telegram-test") {
